@@ -1,0 +1,22 @@
+{
+  "name": "@aperture/client",
+  "version": "0.0.1",
+  "description": "L402 buyer SDK: paying fetch, token cache, budget policies",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@aperture/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0",
+    "tsup": "^8.4.0"
+  }
+}
