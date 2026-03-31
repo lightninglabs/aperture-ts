@@ -1,0 +1,25 @@
+node_modules/
+dist/
+*.wasm
+wasm_exec.js
+.wrangler/
+.dev.vars
+*.tsbuildinfo
+
+# Build artifacts
+*.log
+coverage/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Internal planning docs (not committed)
+aperture-cloudflare-*.md
+plan.md
