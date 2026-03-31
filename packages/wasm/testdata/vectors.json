@@ -1,0 +1,32 @@
+[
+  {
+    "name": "preimage_to_hash",
+    "rootKeyHex": "",
+    "preimageHex": "a3fda6405157d63f2db1efcbfc0a701cd0c6360e830fbfe2d85a98c4f8f588e3",
+    "paymentHash": "eedf4d6bfa59b5d4af20f582bf18c18ccbe34dad8ab837f0e4a056534e29b6d2",
+    "tokenIdHex": "",
+    "caveats": null
+  },
+  {
+    "name": "identifier_roundtrip",
+    "rootKeyHex": "",
+    "preimageHex": "",
+    "paymentHash": "2cefcb8e38fb5fdeba2911994b51dde236877d4f70e87d0b43953d35005f13f2",
+    "tokenIdHex": "ecdd433e814e02908f8473404ab205f782053a4a5f6d8583f7cf54825308fd09",
+    "caveats": null,
+    "identifierHex": "00002cefcb8e38fb5fdeba2911994b51dde236877d4f70e87d0b43953d35005f13f2ecdd433e814e02908f8473404ab205f782053a4a5f6d8583f7cf54825308fd09"
+  },
+  {
+    "name": "service_caveat",
+    "rootKeyHex": "",
+    "preimageHex": "",
+    "paymentHash": "",
+    "tokenIdHex": "",
+    "caveats": [
+      {
+        "condition": "services",
+        "value": "test_api:0"
+      }
+    ]
+  }
+]
