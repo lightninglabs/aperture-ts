@@ -1,14 +1,18 @@
 # aperture-ts
 
-TypeScript L402 runtime for Cloudflare Workers. Gate any API or MCP server
-behind Lightning Network micropayments using the
+TypeScript L402 payment gateway — gate any API or MCP server behind
+Lightning Network micropayments using the
 [L402 protocol](https://github.com/lightninglabs/L402).
 
 aperture-ts is the TypeScript counterpart to
-[aperture](https://github.com/lightninglabs/aperture) (Go). The
-security-critical macaroon layer is shared between both codebases via a
-Go→WASM bridge, guaranteeing identical HMAC-SHA256 signing, caveat
-evaluation, and preimage verification.
+[aperture](https://github.com/lightninglabs/aperture) (Go). The protocol
+core (`@aperture/core`) and buyer SDK (`@aperture/client`) are
+framework-agnostic and run anywhere — Node.js, Deno, Bun, or edge
+runtimes. The `@aperture/http` package provides first-class Cloudflare
+Workers integration (Durable Objects, service bindings) with adapter
+hooks for Hono, Express, and Fastify. The security-critical macaroon
+layer is shared between both codebases via a Go→WASM bridge, guaranteeing
+identical HMAC-SHA256 signing, caveat evaluation, and preimage verification.
 
 ## Architecture
 
