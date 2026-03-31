@@ -1,0 +1,8 @@
+{
+  "name": "aperture-rest-demo",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-15",
+  "vars": {
+    "MACAROON_MASTER_KEY": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+}
