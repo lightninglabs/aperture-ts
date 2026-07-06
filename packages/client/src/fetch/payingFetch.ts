@@ -37,8 +37,32 @@ export function createPayingFetch(config: PayingFetchConfig) {
     input: RequestInfo | URL,
     init?: PayingFetchInit,
   ): Promise<Response> {
-    let request = new Request(input, init);
-    request = ensureIdempotencyKey(request);
+    const incoming = new Request(input, init);
+
+    // Buffer the request body once up front. A Request body is a one-shot
+    // stream: after the first fetch consumes it, the L402 retry could not
+    // re-send it. Every request below is rebuilt from these bytes so the
+    // first attempt and the paid retry send identical payloads.
+    const bodyBytes =
+      incoming.body === null ? null : await incoming.arrayBuffer();
+
+    // Carry the caller's request-shaping fields (notably the AbortSignal)
+    // onto every rebuilt request. Without the signal a caller aborting
+    // mid-stream would not cancel the fetch, and the wallet could pay for
+    // an abandoned request.
+    let request = new Request(incoming.url, {
+      method: incoming.method,
+      headers: incoming.headers,
+      body: bodyBytes ?? undefined,
+      redirect: incoming.redirect,
+      signal: incoming.signal,
+      credentials: incoming.credentials,
+      mode: incoming.mode,
+      cache: incoming.cache,
+      integrity: incoming.integrity,
+      keepalive: incoming.keepalive,
+    });
+    request = ensureIdempotencyKey(request, bodyBytes);
 
     const url = new URL(request.url);
     const cacheKey = TokenCache.cacheKey(
@@ -50,7 +74,12 @@ export function createPayingFetch(config: PayingFetchConfig) {
     // Step 1: Check cache.
     const cached = tokenCache.get(cacheKey);
     const firstRequest = cached
-      ? attachL402Header(request, cached.macaroonB64, cached.preimageHex)
+      ? attachL402Header(
+          request,
+          cached.macaroonB64,
+          cached.preimageHex,
+          bodyBytes,
+        )
       : request;
 
     // Step 2: First fetch.
@@ -63,24 +92,49 @@ export function createPayingFetch(config: PayingFetchConfig) {
     // Step 3: Parse challenge.
     const challenge = await parse402Response(firstResponse);
 
-    // Step 4: Assert buyer policy.
+    // Step 4: Refuse to pay any invoice whose outflow cannot be bounded. A
+    // null amount means an invoice was present but its amount could not be
+    // decoded; a 0 amount means a genuine zero-amount invoice. In both
+    // cases the payer cannot bound the outflow, so paying would let the
+    // seller name an arbitrary price after the fact. Both are refused by
+    // default rather than passed to the budget policy as a free payment.
+    if (challenge.amountSat === null) {
+      throw new Error(
+        "L402 challenge invoice amount could not be decoded; " +
+          "refusing to pay an unbounded outflow",
+      );
+    }
+    if (challenge.amountSat <= 0) {
+      throw new Error(
+        "L402 challenge specifies a zero-amount invoice; refusing to pay " +
+          "an unbounded outflow",
+      );
+    }
+    const amountSat = challenge.amountSat;
+
+    // Step 5: Assert buyer policy.
     if (config.buyerPolicy) {
       await config.buyerPolicy.assertAllowed({
         url: request.url,
         host: url.hostname,
-        amountSat: challenge.amountSat,
+        amountSat,
         routeId: challenge.routeId || undefined,
       });
     }
 
-    // Step 5: Pay invoice.
+    // Step 6: Pay invoice. Re-check the abort signal first: the caller may
+    // have aborted while the policy was resolving, and the wallet must not
+    // spend on a request that has already been abandoned.
+    if (request.signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
     const payment = await config.payer.payInvoice({
       invoice: challenge.invoice,
-      amountSat: challenge.amountSat,
+      amountSat,
       challengeId: challenge.challengeId,
     });
 
-    // Step 6: Cache token.
+    // Step 7: Cache token.
     const token: CachedToken = {
       macaroonB64: challenge.macaroon,
       preimageHex: payment.preimageHex,
@@ -88,18 +142,19 @@ export function createPayingFetch(config: PayingFetchConfig) {
     };
     tokenCache.put(cacheKey, token);
 
-    // Step 7: Retry with L402.
+    // Step 8: Retry with L402.
     const retryRequest = attachL402Header(
       request,
       challenge.macaroon,
       payment.preimageHex,
+      bodyBytes,
     );
     const retryResponse = await fetch(retryRequest);
 
     // Store receipt.
     receiptCache.store({
       paymentHash: "", // Would be extracted from challenge in full impl.
-      amountSat: challenge.amountSat,
+      amountSat,
       invoice: challenge.invoice,
       preimageHex: payment.preimageHex,
       url: request.url,
