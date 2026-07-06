@@ -10,11 +10,6 @@
 
 import type { ChallengeState, ReceiptSummary } from "@aperture/core";
 
-interface DOState {
-  challenges: Map<string, ChallengeState>;
-  receipts: ReceiptSummary[];
-}
-
 export class SellerStateDO implements DurableObject {
   private state: DurableObjectState;
 

@@ -9,7 +9,7 @@
  */
 
 import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
-import { parse402Response, type L402Challenge } from "../challenge/parse402.js";
+import { parse402Response } from "../challenge/parse402.js";
 import { TokenCache, type CachedToken } from "../cache/tokenCache.js";
 import { ReceiptCache } from "../cache/receiptCache.js";
 import { attachL402Header, ensureIdempotencyKey } from "./retry.js";
