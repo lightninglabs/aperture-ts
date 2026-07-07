@@ -51,7 +51,7 @@ export class MacaroonVerifier implements MacaroonVerifierInterface {
 
   async verifyL402(
     parsed: ParsedL402Authorization,
-    request: Request,
+    _request: Request,
     seller: SellerRuntimeConfig,
     route: RouteDefinition,
   ): Promise<VerifiedL402Context> {

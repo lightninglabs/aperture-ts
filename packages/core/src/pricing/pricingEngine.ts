@@ -2,7 +2,7 @@
  * Resolve a PricingPolicy to a concrete amount in satoshis for a given request.
  */
 
-import type { PricingPolicy, RouteMatch } from "../types.js";
+import type { PricingPolicy, TierRule } from "../types.js";
 
 export interface PricingContext {
   request: Request;
@@ -68,18 +68,11 @@ export async function resolveDynamicPrice(
   return result.amountSat;
 }
 
-function resolveTieredPrice(
-  tiers: PricingPolicy extends { kind: "tiered"; tiers: infer T } ? T : never,
-  ctx: PricingContext,
-): number {
+function resolveTieredPrice(tiers: TierRule[], ctx: PricingContext): number {
   const url = new URL(ctx.request.url);
 
   // Evaluate tier rules in order; first match wins.
-  for (const tier of tiers as Array<{
-    name: string;
-    match?: RouteMatch;
-    amountSat: number;
-  }>) {
+  for (const tier of tiers) {
     if (!tier.match) return tier.amountSat;
 
     if (

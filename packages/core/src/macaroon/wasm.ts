@@ -123,7 +123,6 @@ async function doInit(
 
   const go = new GoClass();
 
-  let wasmModule: WebAssembly.Module;
   let instance: WebAssembly.Instance;
 
   if (wasmPathOrModule instanceof WebAssembly.Module) {

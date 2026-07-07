@@ -11,7 +11,7 @@ export default defineConfig({
     "src/util/index.ts",
   ],
   format: ["esm"],
-  dts: true,
+  dts: { compilerOptions: { composite: false } },
   sourcemap: true,
   clean: true,
   target: "esnext",
