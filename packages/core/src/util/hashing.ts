@@ -52,6 +52,16 @@ export async function paymentHashFromPreimage(
   preimageHex: string,
 ): Promise<string> {
   const bytes = hexToBytes(preimageHex);
+
+  // A Lightning preimage is exactly 32 bytes. Hashing anything else would
+  // produce a plausible-looking but unverifiable "proof of payment", so a
+  // malformed preimage from a buggy payer fails loudly instead.
+  if (bytes.length !== 32) {
+    throw new Error(
+      `payment preimage must be 32 bytes, got ${bytes.length}`,
+    );
+  }
+
   const hashBuffer = await crypto.subtle.digest("SHA-256", bytes);
   return bytesToHex(new Uint8Array(hashBuffer));
 }

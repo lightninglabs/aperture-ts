@@ -286,3 +286,88 @@ describe("payingFetch receipts", () => {
     expect(receipt.url).toBe("https://api.example.com/infer");
   });
 });
+
+describe("payingFetch post-payment durability", () => {
+  it("persists the token before a failing paid retry", async () => {
+    const backing = new Map<string, CachedToken>();
+    const asyncStore: TokenStore = {
+      async get(key) {
+        return backing.get(key) ?? null;
+      },
+      async put(key, token) {
+        backing.set(key, token);
+      },
+    };
+
+    let calls = 0;
+    const fakeFetch = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return challengeResponse();
+      }
+      throw new TypeError("fetch failed");
+    });
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const payingFetch = createPayingFetch({
+      payer: newPayer(),
+      tokenCache: asyncStore,
+    });
+
+    await expect(
+      payingFetch("https://api.example.com/infer"),
+    ).rejects.toThrow(/fetch failed/);
+
+    // The paid credential survived the failed retry: the next process (or
+    // call) can ride it instead of re-purchasing.
+    expect(backing.size).toBe(1);
+    const token = [...backing.values()][0]!;
+    expect(token.preimageHex).toBe(PREIMAGE);
+  });
+
+  it("still serves the paid response when the stores fail", async () => {
+    // Money has already moved once payInvoice settles; a durable-store
+    // error must not abort the request the user paid for.
+    const receipts: ClientReceipt[] = [];
+    const failingTokenStore: TokenStore = {
+      async get() {
+        return null;
+      },
+      async put() {
+        throw new Error("disk full");
+      },
+    };
+
+    let calls = 0;
+    const fakeFetch = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return challengeResponse();
+      }
+      return new Response("ok", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fakeFetch);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const payingFetch = createPayingFetch({
+        payer: newPayer(),
+        tokenCache: failingTokenStore,
+        receiptCache: {
+          async store(receipt: ClientReceipt) {
+            receipts.push(receipt);
+          },
+        },
+      });
+
+      const response = await payingFetch("https://api.example.com/infer");
+      expect(response.status).toBe(200);
+
+      // The receipt write is independent of the failed token write.
+      expect(receipts).toHaveLength(1);
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

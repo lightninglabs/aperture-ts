@@ -155,27 +155,41 @@ export function createPayingFetch(config: PayingFetchConfig) {
       challengeId: challenge.challengeId,
     });
 
-    // Step 7: Cache the token and record the receipt. Both happen before
+    // Step 7: Record the receipt and cache the token. Both happen before
     // the retry: money has already moved, so a retry that throws must not
     // lose the credential or the record of the spend. The payment hash is
     // derived from the preimage itself (sha256(preimage) == payment_hash),
     // making every receipt a self-contained proof of payment.
+    //
+    // The two writes are independent and neither may abort the request:
+    // the credential is in hand, so serving the response the user paid
+    // for beats failing on a durable-store error. A failed write degrades
+    // to at worst re-purchasing one bundle (token) or a gap in the local
+    // ledger (receipt), both bounded; failing here would waste the whole
+    // payment.
     const token: CachedToken = {
       macaroonB64: challenge.macaroon,
       preimageHex: payment.preimageHex,
       expiresAt: challenge.expiresAt,
     };
-    await tokenCache.put(cacheKey, token);
-
-    await receiptCache.store({
-      paymentHash: await paymentHashFromPreimage(payment.preimageHex),
-      amountSat,
-      paidSat: payment.amountPaidSat,
-      invoice: challenge.invoice,
-      preimageHex: payment.preimageHex,
-      url: request.url,
-      timestamp: new Date().toISOString(),
-    });
+    const writes = await Promise.allSettled([
+      (async () =>
+        receiptCache.store({
+          paymentHash: await paymentHashFromPreimage(payment.preimageHex),
+          amountSat,
+          paidSat: payment.amountPaidSat,
+          invoice: challenge.invoice,
+          preimageHex: payment.preimageHex,
+          url: request.url,
+          timestamp: new Date().toISOString(),
+        }))(),
+      (async () => tokenCache.put(cacheKey, token))(),
+    ]);
+    for (const write of writes) {
+      if (write.status === "rejected") {
+        console.warn("payingFetch: post-payment store failed:", write.reason);
+      }
+    }
 
     // Step 8: Retry with L402.
     const retryRequest = attachL402Header(
