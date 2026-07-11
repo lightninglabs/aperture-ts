@@ -371,3 +371,46 @@ describe("payingFetch post-payment durability", () => {
     }
   });
 });
+
+describe("payingFetch malformed preimage", () => {
+  it("still records the receipt when the preimage cannot be hashed", async () => {
+    // A buggy payer returns a 16-byte preimage. The hash derivation fails,
+    // but the spend record must survive with an empty hash, and the paid
+    // response must still be served.
+    const receipts: ClientReceipt[] = [];
+    const payer = new MockInvoicePayer();
+    payer.addPreimage("hash", "ab".repeat(16));
+
+    let calls = 0;
+    const fakeFetch = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return challengeResponse();
+      }
+      return new Response("ok", { status: 200 });
+    });
+    vi.stubGlobal("fetch", fakeFetch);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const payingFetch = createPayingFetch({
+        payer,
+        receiptCache: {
+          async store(receipt: ClientReceipt) {
+            receipts.push(receipt);
+          },
+        },
+      });
+
+      const response = await payingFetch("https://api.example.com/infer");
+      expect(response.status).toBe(200);
+
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]!.paymentHash).toBe("");
+      expect(receipts[0]!.preimageHex).toBe("ab".repeat(16));
+      expect(warn).toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

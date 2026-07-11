@@ -172,10 +172,21 @@ export function createPayingFetch(config: PayingFetchConfig) {
       preimageHex: payment.preimageHex,
       expiresAt: challenge.expiresAt,
     };
+
+    // Derive the payment hash outside the receipt write, so a malformed
+    // preimage from a buggy payer cannot take the whole receipt down with
+    // it: a spend record with an empty hash still beats no record at all.
+    let paymentHash = "";
+    try {
+      paymentHash = await paymentHashFromPreimage(payment.preimageHex);
+    } catch (err) {
+      console.warn("payingFetch: unhashable payment preimage:", err);
+    }
+
     const writes = await Promise.allSettled([
       (async () =>
         receiptCache.store({
-          paymentHash: await paymentHashFromPreimage(payment.preimageHex),
+          paymentHash,
           amountSat,
           paidSat: payment.amountPaidSat,
           invoice: challenge.invoice,

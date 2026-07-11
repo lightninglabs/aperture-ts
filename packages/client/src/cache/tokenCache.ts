@@ -44,10 +44,12 @@ export class TokenCache implements TokenStore {
     const token = this.cache.get(key);
     if (!token) return null;
 
-    // Check expiry.
+    // Check expiry. An unparseable expiry counts as expired: NaN loses
+    // every comparison, which would otherwise make the token immortal, the
+    // wrong failure mode for garbage input on a bearer credential.
     if (token.expiresAt) {
       const expiresMs = new Date(token.expiresAt).getTime();
-      if (Date.now() > expiresMs) {
+      if (Number.isNaN(expiresMs) || Date.now() > expiresMs) {
         this.cache.delete(key);
         return null;
       }
