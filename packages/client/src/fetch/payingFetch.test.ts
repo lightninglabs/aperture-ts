@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { paymentHashFromPreimage } from "@aperture/core/util";
 import { createPayingFetch } from "./payingFetch.js";
 import { MockInvoicePayer } from "../payer/interface.js";
+import type { CachedToken, TokenStore } from "../cache/tokenCache.js";
+import type { ClientReceipt } from "../cache/receiptCache.js";
 
 const PREIMAGE = "ab".repeat(32);
 
@@ -138,6 +141,79 @@ describe("payingFetch amount safety", () => {
     expect(payInvoice).not.toHaveBeenCalled();
   });
 
+  it("keys cached tokens by origin, not bare hostname", async () => {
+    // Two proxies on different ports of the same host mint unrelated
+    // tokens: a token paid for on :8404 must not be attached to a request
+    // against :8402.
+    const seenAuth: Array<string | null> = [];
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const req = input as Request;
+      seenAuth.push(req.headers.get("Authorization"));
+      if (req.headers.get("Authorization")) {
+        return new Response("ok", { status: 200 });
+      }
+      return challengeResponse();
+    });
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const payingFetch = createPayingFetch({ payer: newPayer() });
+
+    // First call pays and caches under http://api.example.com:8404.
+    await payingFetch("http://api.example.com:8404/infer");
+    // Second call to the same origin rides the cached token.
+    await payingFetch("http://api.example.com:8404/infer");
+    // A different port on the same host must start unauthenticated.
+    await payingFetch("http://api.example.com:8402/infer");
+
+    // Call 1: no auth (fresh), call 2: paid retry with auth, call 3: cache
+    // hit for the same origin, call 4: no auth (different origin), call 5:
+    // its own paid retry.
+    expect(seenAuth[0]).toBeNull();
+    expect(seenAuth[1]).not.toBeNull();
+    expect(seenAuth[2]).not.toBeNull();
+    expect(seenAuth[3]).toBeNull();
+    expect(seenAuth[4]).not.toBeNull();
+  });
+
+  it("supports asynchronous token stores", async () => {
+    // A durable (file- or db-backed) store returns promises; the paying
+    // fetch must await it on both the read and write side.
+    const backing = new Map<string, CachedToken>();
+    const asyncStore: TokenStore = {
+      async get(key) {
+        return backing.get(key) ?? null;
+      },
+      async put(key, token) {
+        backing.set(key, token);
+      },
+    };
+
+    let calls = 0;
+    const fakeFetch = vi.fn(async (input: RequestInfo | URL) => {
+      const req = input as Request;
+      calls += 1;
+      if (req.headers.get("Authorization")) {
+        return new Response("ok", { status: 200 });
+      }
+      return challengeResponse();
+    });
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const payingFetch = createPayingFetch({
+      payer: newPayer(),
+      tokenCache: asyncStore,
+    });
+
+    await payingFetch("https://api.example.com/infer");
+    expect(backing.size).toBe(1);
+
+    // The second call must hit the async cache: one fetch, no 402.
+    calls = 0;
+    const response = await payingFetch("https://api.example.com/infer");
+    expect(response.status).toBe(200);
+    expect(calls).toBe(1);
+  });
+
   it("does not pay when the caller aborts before payment", async () => {
     // The signal is already aborted by the time the challenge is parsed, so
     // the wallet must not spend on the abandoned request.
@@ -162,5 +238,51 @@ describe("payingFetch amount safety", () => {
     ).rejects.toThrow(/aborted/);
 
     expect(payInvoice).not.toHaveBeenCalled();
+  });
+});
+
+describe("payingFetch receipts", () => {
+  it("records a self-verifying receipt before the paid retry runs", async () => {
+    const receipts: ClientReceipt[] = [];
+    const receiptStore = {
+      async store(receipt: ClientReceipt) {
+        receipts.push(receipt);
+      },
+    };
+
+    let calls = 0;
+    const fakeFetch = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) {
+        return challengeResponse();
+      }
+      // The paid retry dies on the network. Money already moved, so the
+      // receipt must survive this.
+      throw new TypeError("fetch failed");
+    });
+    vi.stubGlobal("fetch", fakeFetch);
+
+    const payingFetch = createPayingFetch({
+      payer: newPayer(),
+      receiptCache: receiptStore,
+    });
+
+    await expect(
+      payingFetch("https://api.example.com/infer"),
+    ).rejects.toThrow(/fetch failed/);
+
+    expect(receipts).toHaveLength(1);
+    const receipt = receipts[0]!;
+
+    // The payment hash is derived from the preimage, so the receipt is a
+    // self-contained proof of payment.
+    expect(receipt.paymentHash).toBe(
+      await paymentHashFromPreimage(PREIMAGE),
+    );
+    expect(receipt.preimageHex).toBe(PREIMAGE);
+    expect(receipt.amountSat).toBe(10);
+    expect(receipt.paidSat).toBe(10);
+    expect(receipt.invoice).toBe("lnbc100n1fake");
+    expect(receipt.url).toBe("https://api.example.com/infer");
   });
 });

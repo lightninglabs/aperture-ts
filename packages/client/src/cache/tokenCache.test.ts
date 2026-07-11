@@ -31,8 +31,12 @@ describe("TokenCache", () => {
     expect(cache.get("expired")).toBeNull();
   });
 
-  it("cacheKey combines host+routeId+method", () => {
-    const key = TokenCache.cacheKey("api.example.com", "search", "POST");
-    expect(key).toBe("api.example.com|search|POST");
+  it("cacheKey combines origin+routeId+method", () => {
+    const key = TokenCache.cacheKey(
+      "https://api.example.com:8404",
+      "search",
+      "POST",
+    );
+    expect(key).toBe("https://api.example.com:8404|search|POST");
   });
 });

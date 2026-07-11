@@ -9,15 +9,32 @@
  */
 
 import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
+import { paymentHashFromPreimage } from "@aperture/core/util";
 import { parse402Response } from "../challenge/parse402.js";
-import { TokenCache, type CachedToken } from "../cache/tokenCache.js";
-import { ReceiptCache } from "../cache/receiptCache.js";
+import {
+  TokenCache,
+  type CachedToken,
+  type TokenStore,
+} from "../cache/tokenCache.js";
+import { ReceiptCache, type ReceiptStore } from "../cache/receiptCache.js";
 import { attachL402Header, ensureIdempotencyKey } from "./retry.js";
 
 export interface PayingFetchConfig {
   payer: InvoicePayer;
-  tokenCache?: TokenCache;
-  receiptCache?: ReceiptCache;
+
+  /**
+   * Storage for paid L402 tokens. Defaults to a process-local in-memory
+   * cache; inject a durable implementation so paid bundles survive process
+   * restarts instead of being re-purchased.
+   */
+  tokenCache?: TokenStore;
+
+  /**
+   * Sink for payment receipts. Defaults to a process-local in-memory cache;
+   * inject a durable ledger for a spend audit trail.
+   */
+  receiptCache?: ReceiptStore;
+
   buyerPolicy?: BuyerPolicy;
 }
 
@@ -64,15 +81,19 @@ export function createPayingFetch(config: PayingFetchConfig) {
     });
     request = ensureIdempotencyKey(request, bodyBytes);
 
+    // Key tokens by the full origin (scheme://host[:port]), not the bare
+    // hostname: two proxies on different ports of the same host mint
+    // unrelated tokens, and a plaintext origin must never share a credential
+    // with a TLS one.
     const url = new URL(request.url);
     const cacheKey = TokenCache.cacheKey(
-      url.hostname,
+      url.origin,
       init?.routeId ?? url.pathname,
       request.method,
     );
 
     // Step 1: Check cache.
-    const cached = tokenCache.get(cacheKey);
+    const cached = await tokenCache.get(cacheKey);
     const firstRequest = cached
       ? attachL402Header(
           request,
@@ -134,13 +155,27 @@ export function createPayingFetch(config: PayingFetchConfig) {
       challengeId: challenge.challengeId,
     });
 
-    // Step 7: Cache token.
+    // Step 7: Cache the token and record the receipt. Both happen before
+    // the retry: money has already moved, so a retry that throws must not
+    // lose the credential or the record of the spend. The payment hash is
+    // derived from the preimage itself (sha256(preimage) == payment_hash),
+    // making every receipt a self-contained proof of payment.
     const token: CachedToken = {
       macaroonB64: challenge.macaroon,
       preimageHex: payment.preimageHex,
       expiresAt: challenge.expiresAt,
     };
-    tokenCache.put(cacheKey, token);
+    await tokenCache.put(cacheKey, token);
+
+    await receiptCache.store({
+      paymentHash: await paymentHashFromPreimage(payment.preimageHex),
+      amountSat,
+      paidSat: payment.amountPaidSat,
+      invoice: challenge.invoice,
+      preimageHex: payment.preimageHex,
+      url: request.url,
+      timestamp: new Date().toISOString(),
+    });
 
     // Step 8: Retry with L402.
     const retryRequest = attachL402Header(
@@ -149,18 +184,6 @@ export function createPayingFetch(config: PayingFetchConfig) {
       payment.preimageHex,
       bodyBytes,
     );
-    const retryResponse = await fetch(retryRequest);
-
-    // Store receipt.
-    receiptCache.store({
-      paymentHash: "", // Would be extracted from challenge in full impl.
-      amountSat,
-      invoice: challenge.invoice,
-      preimageHex: payment.preimageHex,
-      url: request.url,
-      timestamp: new Date().toISOString(),
-    });
-
-    return retryResponse;
+    return fetch(retryRequest);
   };
 }
