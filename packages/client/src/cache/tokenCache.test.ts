@@ -31,8 +31,23 @@ describe("TokenCache", () => {
     expect(cache.get("expired")).toBeNull();
   });
 
-  it("cacheKey combines host+routeId+method", () => {
-    const key = TokenCache.cacheKey("api.example.com", "search", "POST");
-    expect(key).toBe("api.example.com|search|POST");
+  it("treats a garbage expiry as expired", () => {
+    const cache = new TokenCache();
+    cache.put("key", {
+      macaroonB64: "AQIDBA==",
+      preimageHex: "ab".repeat(32),
+      expiresAt: "not-a-date",
+    });
+    // An unparseable expiry must not mint an immortal bearer credential.
+    expect(cache.get("key")).toBeNull();
+  });
+
+  it("cacheKey combines origin+routeId+method", () => {
+    const key = TokenCache.cacheKey(
+      "https://api.example.com:8404",
+      "search",
+      "POST",
+    );
+    expect(key).toBe("https://api.example.com:8404|search|POST");
   });
 });
