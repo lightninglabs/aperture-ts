@@ -668,6 +668,50 @@ describe("session intent", () => {
     expect(payer.paid).toHaveLength(1);
   });
 
+  it("hands back a 402 whose body the caller can still read", async () => {
+    // The 402 is returned precisely so the caller can see why. A body can
+    // be read once, so reading the problem document out of it internally
+    // would leave the caller holding a response that throws.
+    stubFetch(async (_sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ]);
+      }
+      if (index === 1) return new Response("ok", { status: 200 });
+      return challengeResponse(
+        [
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "second",
+          }),
+        ],
+        {
+          type: PROBLEM_VERIFICATION_FAILED,
+          detail: "Credential did not verify",
+        },
+      );
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    await client(URL_UNDER_TEST);
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(402);
+    expect(response.bodyUsed).toBe(false);
+    expect(await response.json()).toMatchObject({
+      type: PROBLEM_VERIFICATION_FAILED,
+      detail: "Credential did not verify",
+    });
+  });
+
   it("takes a charge offer when a session refusal is unexplained", async () => {
     stubFetch(async (_sent, index) => {
       if (index === 0) {

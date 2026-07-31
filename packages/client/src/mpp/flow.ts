@@ -107,7 +107,12 @@ export async function runPaymentFlow(
   input: PaymentFlowInput,
 ): Promise<Response> {
   const budget = new PaymentBudget();
-  const problem = await readProblem(input.response);
+
+  // Read the problem document off a clone. Several paths below hand the
+  // original 402 back to the caller, and a body can be read once: without
+  // the clone the caller would receive a response whose body throws on
+  // every attempt to read the very explanation it was returned for.
+  const problem = await readProblem(input.response.clone());
 
   if (input.attemptedSession === null) {
     return runFreshFlow(config, input, budget, config.intents);
