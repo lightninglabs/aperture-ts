@@ -209,28 +209,26 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
       }
     };
 
-    // Step 1: Attach whatever this client has already paid for. A live
-    // session comes first: it is the credential that covers the most
-    // requests, and unlike the others it costs nothing to present.
-    const session = await sessions.findForOrigin(url.origin);
-    const firstRequest = await attachExistingCredential({
+    // Step 1: Attach whatever this client has already paid for.
+    const attached = await attachExistingCredential({
       request,
       bodyBytes,
       cacheKey,
       tokenCache,
       credentialCache,
       sessions,
-      session,
+      origin: url.origin,
     });
 
     // Step 2: First fetch.
-    const firstResponse = await fetch(firstRequest);
+    const firstResponse = await fetch(attached.request);
     if (firstResponse.status !== 402) {
       // A bearer request that the server served is a request the server
       // charged for. This is the common case for a session, and the one
-      // place a spend happens without any payment to hang the bookkeeping
-      // off, so the estimate is drawn down here or it is never drawn down
-      // at all.
+      // place a spend happens with no payment to hang the bookkeeping off,
+      // so the estimate is drawn down here or it is never drawn down at
+      // all.
+      const session = attached.session;
       if (
         session !== null &&
         firstResponse.ok &&
@@ -267,7 +265,7 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
           url: request.url,
           origin: url.origin,
           credentialKey: cacheKey,
-          attemptedSession: session,
+          attemptedSession: attached.session,
           retry: async (authorization: string) =>
             fetch(attachAuthorization(request, authorization, bodyBytes)),
           assertNotAborted,
@@ -305,12 +303,28 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
   return payingFetch;
 }
 
+/** What `attachExistingCredential` decided to present, and on what. */
+interface AttachedCredential {
+  request: Request;
+
+  /**
+   * The session whose bearer credential was attached, or null when
+   * something else was. Only a request that actually carried a bearer
+   * credential can have that credential refused, so the rest of the loop
+   * reads this rather than merely whether a session exists.
+   */
+  session: SessionRecord | null;
+}
+
 /**
  * Attach the credential this client already holds for a request, if any.
  *
- * The order matters. A session bearer covers the widest scope and costs
- * nothing to present, a paid Payment credential is next, and an L402 token
- * last. Only one Authorization header can be sent, so the first match wins.
+ * Only one Authorization header can be sent, so the order is most specific
+ * first: a credential paid for this exact origin, route, and method beats a
+ * session bearer, which is scoped to the whole origin and was found by
+ * guessing at the realm. Preferring the session would mean an origin that
+ * serves both protocols could present a bearer credential on a route it has
+ * a paid L402 token for, get refused, and buy the token a second time.
  */
 async function attachExistingCredential(input: {
   request: Request;
@@ -319,37 +333,47 @@ async function attachExistingCredential(input: {
   tokenCache: TokenStore;
   credentialCache: CredentialStore;
   sessions: SessionManager;
-  session: SessionRecord | null;
-}): Promise<Request> {
-  if (input.session !== null) {
-    const credential = input.sessions.bearerCredential(input.session);
-    return attachAuthorization(
-      input.request,
-      toAuthorizationHeader(credential),
-      input.bodyBytes,
-    );
-  }
-
+  origin: string;
+}): Promise<AttachedCredential> {
   const paid = await input.credentialCache.get(input.cacheKey);
   if (paid !== null && paid !== undefined) {
-    return attachAuthorization(
-      input.request,
-      paid.authorization,
-      input.bodyBytes,
-    );
+    return {
+      request: attachAuthorization(
+        input.request,
+        paid.authorization,
+        input.bodyBytes,
+      ),
+      session: null,
+    };
   }
 
   const token = await input.tokenCache.get(input.cacheKey);
   if (token !== null && token !== undefined) {
-    return attachL402Header(
-      input.request,
-      token.macaroonB64,
-      token.preimageHex,
-      input.bodyBytes,
-    );
+    return {
+      request: attachL402Header(
+        input.request,
+        token.macaroonB64,
+        token.preimageHex,
+        input.bodyBytes,
+      ),
+      session: null,
+    };
   }
 
-  return input.request;
+  const session = await input.sessions.findForOrigin(input.origin);
+  if (session !== null) {
+    const credential = input.sessions.bearerCredential(session);
+    return {
+      request: attachAuthorization(
+        input.request,
+        toAuthorizationHeader(credential),
+        input.bodyBytes,
+      ),
+      session,
+    };
+  }
+
+  return { request: input.request, session: null };
 }
 
 /**

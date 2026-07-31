@@ -20,6 +20,7 @@ import {
 import { createPayingFetch } from "./payingFetch.js";
 import { SessionCache } from "../cache/sessionStore.js";
 import { CredentialCache } from "../cache/credentialCache.js";
+import { TokenCache } from "../cache/tokenCache.js";
 import { ReceiptCache } from "../cache/receiptCache.js";
 import { MockReturnInvoiceMinter } from "../mpp/mockMinter.js";
 import {
@@ -79,6 +80,7 @@ function newClient(
     minter?: MockReturnInvoiceMinter | null;
     sessionStore?: SessionCache;
     credentialCache?: CredentialCache;
+    tokenCache?: TokenCache;
     receiptCache?: ReceiptCache;
     intents?: readonly string[];
     buyerPolicy?: { assertAllowed: (input: unknown) => Promise<void> };
@@ -91,11 +93,13 @@ function newClient(
       : (overrides.minter ?? new MockReturnInvoiceMinter());
   const sessionStore = overrides.sessionStore ?? new SessionCache();
   const credentialCache = overrides.credentialCache ?? new CredentialCache();
+  const tokenCache = overrides.tokenCache ?? new TokenCache();
   const receiptCache = overrides.receiptCache ?? new ReceiptCache();
 
   const client = createPayingFetch({
     payer,
     receiptCache,
+    tokenCache,
     ...(overrides.buyerPolicy === undefined
       ? {}
       : { buyerPolicy: overrides.buyerPolicy as never }),
@@ -107,7 +111,15 @@ function newClient(
     },
   });
 
-  return { client, payer, minter, sessionStore, credentialCache, receiptCache };
+  return {
+    client,
+    payer,
+    minter,
+    sessionStore,
+    credentialCache,
+    tokenCache,
+    receiptCache,
+  };
 }
 
 describe("charge intent", () => {
@@ -838,6 +850,96 @@ describe("closing sessions", () => {
 
     expect(outcomes[0]?.refundStatus).toBe("skipped");
     expect(outcomes[0]?.refundSats).toBe(0);
+  });
+});
+
+describe("credential precedence", () => {
+  it("prefers a route-scoped L402 token over an origin-wide session", async () => {
+    // A session is found by guessing at the realm from the origin alone. If
+    // it outranked a token already paid for this exact route, an origin
+    // serving both protocols would present a bearer credential, be refused,
+    // and buy the same token a second time.
+    const l402Url = "https://api.example.com/l402";
+    const tokenCache = new TokenCache();
+    tokenCache.put(
+      TokenCache.cacheKey("https://api.example.com", "/l402", "GET"),
+      {
+        macaroonB64: "AQIDBA==",
+        preimageHex: preimageFor("l402"),
+        expiresAt: "2099-01-01T00:00:00Z",
+      },
+    );
+
+    const { calls } = stubFetch(async (_sent, index) =>
+      index === 0
+        ? challengeResponse([
+            await sessionChallenge({
+              depositSat: 300,
+              pricePerUnitSat: 2,
+              label: "deposit",
+            }),
+          ])
+        : new Response("ok", { status: 200 }),
+    );
+
+    const { client, payer } = newClient({ tokenCache });
+    await payer.expectLabel(300, "deposit");
+
+    await client(URL_UNDER_TEST);
+    const response = await client(l402Url);
+
+    expect(response.status).toBe(200);
+    expect(payer.paid).toEqual([invoiceFor(300, "deposit")]);
+    expect(calls[2]?.authorization).toBe(
+      `L402 AQIDBA==:${preimageFor("l402")}`,
+    );
+  });
+
+  it("does not attribute a refused cached credential to the session", async () => {
+    // The session exists but was not the credential the server refused, so
+    // a session-not-found problem in that 402 is about something else and
+    // must not discard the session, along with its refund.
+    const chargeUrl = "https://api.example.com/charge";
+    const credentialCache = new CredentialCache();
+    credentialCache.put(
+      CredentialCache.cacheKey("https://api.example.com", "/charge", "GET"),
+      { authorization: "Payment c3RhbGU", challengeId: "ch_stale" },
+    );
+
+    stubFetch(async (sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ]);
+      }
+      if (sent.url.endsWith("/charge") && sent.authorization === "Payment c3RhbGU") {
+        return challengeResponse(
+          [await chargeChallenge({ amountSat: 100, label: "charge" })],
+          { type: PROBLEM_LIGHTNING_SESSION_NOT_FOUND },
+        );
+      }
+      return new Response("ok", { status: 200 });
+    });
+
+    const { client, payer } = newClient({ credentialCache });
+    await payer.expectLabel(300, "deposit");
+    await payer.expectLabel(100, "charge");
+
+    await client(URL_UNDER_TEST);
+    const response = await client(chargeUrl);
+
+    expect(response.status).toBe(200);
+    expect(payer.paid).toEqual([
+      invoiceFor(300, "deposit"),
+      invoiceFor(100, "charge"),
+    ]);
+
+    // The session is untouched: still open, still closable, still refundable.
+    expect(await client.sessions.listOpen()).toHaveLength(1);
   });
 });
 
