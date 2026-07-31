@@ -184,9 +184,15 @@ function formatNumber(value: number): string {
 /**
  * Escape characters that must not appear literally inside a JSON string,
  * reproducing Go's `encoding/json` escaping: the two mandatory escapes, the
- * short forms for the common control characters, `\u00xx` for the remaining
- * C0 controls, and the HTML-safety escapes for "<", ">", "&", U+2028, and
- * U+2029.
+ * short forms for the five control characters that have one, `\u00xx` for
+ * the remaining C0 controls, and the HTML-safety escapes for "<", ">", "&",
+ * U+2028, and U+2029.
+ *
+ * There are five short forms, `\b`, `\f`, `\n`, `\r`, and `\t`, and the
+ * reference implementation emits all five, as does RFC 8785. Spelling the
+ * first two out as six-character `\u00xx` escapes parses back to the same
+ * string but is a different sequence of bytes, and the bytes are what the
+ * challenge id's HMAC is computed over.
  */
 function escapeString(value: string): string {
   let out = '"';
@@ -200,6 +206,12 @@ function escapeString(value: string): string {
         continue;
       case "\\":
         out += "\\\\";
+        continue;
+      case "\b":
+        out += "\\b";
+        continue;
+      case "\f":
+        out += "\\f";
         continue;
       case "\n":
         out += "\\n";

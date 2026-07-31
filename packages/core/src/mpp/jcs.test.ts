@@ -55,6 +55,23 @@ describe("canonicalize divergences from RFC 8785 that match the reference", () =
     );
   });
 
+  it("uses the short form for every control character that has one", () => {
+    // Both the reference implementation and RFC 8785 write these five as
+    // two characters. Backspace and form feed are the two that a
+    // canonicalizer is likely to get wrong, because they are the two the
+    // protocol's own payloads never contain, so nothing on a live wire
+    // would ever report the divergence.
+    expect(canonicalize({ s: "\b\f\n\r\t" })).toBe('{"s":"\\b\\f\\n\\r\\t"}');
+  });
+
+  it("spells out the C0 controls that have no short form", () => {
+    // Everything below 0x20 that is not one of the five, lowercase hex and
+    // padded to four digits, which is what Go's `\u00xx` produces.
+    expect(canonicalize({ s: "\u0000\u000b\u001b\u001f" })).toBe(
+      '{"s":"\\u0000\\u000b\\u001b\\u001f"}',
+    );
+  });
+
   it("escapes the two line separators", () => {
     const separators = "a\u2028b\u2029c";
     expect(canonicalize({ s: separators })).toBe(
@@ -197,6 +214,27 @@ describe("canonicalize properties", () => {
     }
   });
 
+  it("never spells out an escape that has a short form", () => {
+    // Two canonicalizers that disagree on which form to use still parse
+    // each other's output, so nothing but a byte comparison catches this.
+    // The rule is the reference implementation's: a six-character escape
+    // appears only for a character that has no two-character form and
+    // cannot be written literally.
+    const shortForm = new Set([0x08, 0x09, 0x0a, 0x0c, 0x0d]);
+    const htmlEscaped = new Set([0x26, 0x3c, 0x3e, 0x2028, 0x2029]);
+
+    for (let seed = 0; seed < ITERATIONS; seed++) {
+      const canonical = canonicalize(randomJson(makeRng(seed), 3));
+
+      for (const match of canonical.matchAll(/\\u([0-9a-f]{4})/g)) {
+        const code = Number.parseInt(match[1] as string, 16);
+
+        expect(shortForm.has(code)).toBe(false);
+        expect(code < 0x20 || htmlEscaped.has(code)).toBe(true);
+      }
+    }
+  });
+
   it("distinguishes values that differ, for every generated pair", () => {
     // Canonical forms are compared for equality by the HMAC, so two
     // different logical values must not share one.
@@ -217,16 +255,23 @@ describe("canonicalize properties", () => {
   });
 });
 
-/** Deterministic 32-bit PRNG, so a failing property test is reproducible. */
+/**
+ * Deterministic 32-bit PRNG, so a failing property test is reproducible.
+ *
+ * This is mulberry32 rather than the xorshift it replaced. Xorshift seeded
+ * from a small counter does not mix on its first output: across the 300
+ * seeds this suite uses, the first draw always landed in [0.3125, 0.375),
+ * so `randomJson` picked the same branch every time and the whole property
+ * suite generated nothing but integers. A generator whose first draw is
+ * degenerate is worse than no generator, because the tests still pass.
+ */
 function makeRng(seed: number): () => number {
   let state = (seed + 0x9e3779b9) >>> 0;
   return () => {
-    state ^= state << 13;
-    state >>>= 0;
-    state ^= state >>> 17;
-    state ^= state << 5;
-    state >>>= 0;
-    return state / 0x1_0000_0000;
+    state = (state + 0x6d2b79f5) >>> 0;
+    let mixed = Math.imul(state ^ (state >>> 15), state | 1);
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61);
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 0x1_0000_0000;
   };
 }
 
@@ -235,9 +280,14 @@ function makeRng(seed: number): () => number {
  * that have historically broken canonicalizers: the escape-triggering ones,
  * the HTML-sensitive ones, non-ASCII, and one astral character to exercise
  * the code point ordering.
+ *
+ * All five short-form controls are here, backspace and form feed included.
+ * Leaving those two out is what let them go unnoticed: they are the only
+ * escapes the protocol's own payloads never produce, so no generator that
+ * skips them can tell a short form from a long one.
  */
 const CHARS = Array.from(
-  'ab-_ AZ09"\\\n\t<>&\u00e9\u4e2d\uFFFD\u{1F600}\u2028',
+  'ab-_ AZ09"\\\b\f\n\r\t\v<>&\u00e9\u4e2d\uFFFD\u{1F600}\u2028',
 )
 
 function randomString(rng: () => number, maxLength: number): string {

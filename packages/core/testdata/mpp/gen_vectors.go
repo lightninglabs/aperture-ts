@@ -99,6 +99,7 @@ var jcsInputs = []struct {
 	{"unicode string", `{"s":"café"}`},
 	{"unicode keys", `{"é":"1","e":"2","z":"3"}`},
 	{"control characters", `{"s":"\u0000\u001f\u007f"}`},
+	{"short form controls", `{"s":"\b\f\n\r\t"}`},
 	{"forward slash and ampersand", `{"s":"a/b&c<d>e"}`},
 	{"astral key ordering", `{"\ud83d\ude00":"emoji","\ufffd":"replacement","a":"ascii"}`},
 	{"non integer numbers", `{"a":1.5,"b":-0.25,"c":100.0}`},
