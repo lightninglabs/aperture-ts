@@ -175,7 +175,6 @@ describe("credentials against the Go vector file", () => {
     for (const v of credentialVectors) {
       if (v.error === true) continue;
       if (!v.header.startsWith("Payment ")) continue;
-      if (/\\u00(26|3c|3e)/.test(v.credentialJson)) continue;
 
       const credential = JSON.parse(v.credentialJson) as Credential;
       expect(formatAuthorizationHeader(credential), v.name).toBe(v.header);
@@ -186,34 +185,32 @@ describe("credentials against the Go vector file", () => {
   });
 
   it("does not escape HTML characters inside a credential either", () => {
-    // The reference's canonicalizer no longer escapes "<", ">" and "&", but
-    // its credential encoder still does, because that one is a plain
-    // json.Marshal. So the two sides emit different bytes for a credential
-    // echoing a description like "Q&A endpoint", and decode each other's
-    // fine.
+    // This used to be the one place the two sides disagreed on bytes. The
+    // reference's canonicalizer had stopped escaping "<", ">" and "&", but
+    // its credential encoder was a plain json.Marshal and still did, so a
+    // credential echoing a description like "Q&A endpoint" came out spelled
+    // two ways.
     //
-    // This side does not follow. Nothing signs a credential: a seller
-    // recomputes the challenge HMAC from the decoded parameters, and
-    // description is not one of the seven slots that HMAC covers. Adding
-    // HTML escaping back to one encoder to match a peer that is escaping by
-    // accident would reintroduce, one function over, exactly the divergence
-    // that was just taken out of the canonicalizer.
+    // The reference now routes both the credential and the receipt through an
+    // encoder with HTML escaping off, and gained an EncodeCredential to sit
+    // opposite its parser. Nothing signs a credential, so this was never a
+    // security question, but a vector pinning the wrong bytes is how the next
+    // implementation inherits the bug. The agreement is asserted rather than
+    // the divergence documented.
     const v = credentialVectors.find(
       (entry) => entry.name === "session open credential with a source",
     );
     expect(v).toBeDefined();
-    expect(v!.credentialJson).toContain("Q\\u0026A endpoint");
+    expect(v!.credentialJson).toContain("Q&A endpoint");
+    expect(v!.credentialJson).not.toContain("\\u0026");
 
     const credential = JSON.parse(v!.credentialJson) as Credential;
     const emitted = formatAuthorizationHeader(credential);
 
-    expect(emitted).not.toBe(v!.header);
+    expect(emitted).toBe(v!.header);
     expect(
       decodeBase64UrlText(emitted.slice("Payment ".length)),
     ).toContain("Q&A endpoint");
-
-    // What has to hold, and does: each side reads the other's bytes back to
-    // the same document.
     expect(parseCredential(emitted)).toEqual(parseCredential(v!.header));
   });
 });
