@@ -50,10 +50,15 @@ export function readReceipt<T extends Receipt = SessionReceipt>(
 
   try {
     return parseReceiptHeader<T>(header);
-  } catch {
+  } catch (err) {
     // A receipt that will not parse is reported as absent. It cannot be
     // checked, and it is not worth failing a request the caller has
-    // already paid for over a malformed audit record.
+    // already paid for over a malformed audit record. It is worth saying so
+    // out loud, though: a seller emitting receipts this client cannot read
+    // is the same class of disagreement `checkReceipt` exists to surface,
+    // and a receipt whose status is not "success" arrives here rather than
+    // there.
+    console.warn("mpp: discarding an unreadable receipt:", err);
     return null;
   }
 }

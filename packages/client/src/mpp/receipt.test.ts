@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   METHOD_LIGHTNING,
   encodeReceipt,
@@ -42,6 +42,22 @@ describe("readReceipt", () => {
       },
     });
     expect(readReceipt(response)).toBeNull();
+  });
+
+  it("does not hand back a receipt that says the payment failed", () => {
+    // A receipt is the only evidence this client keeps that a payment
+    // settled, so one claiming a status the protocol does not define is
+    // dropped rather than filed as proof.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const response = new Response("ok", {
+      headers: {
+        "Payment-Receipt": encodeReceipt({ ...GOOD, status: "failed" }),
+      },
+    });
+
+    expect(readReceipt(response)).toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 

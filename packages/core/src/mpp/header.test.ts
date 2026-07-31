@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll } from "vitest";
 import {
   decodeRequestObject,
   encodeCredential,
+  encodeReceipt,
   encodeRequestObject,
   formatAuthorizationHeader,
   formatChallengeHeader,
@@ -14,6 +15,7 @@ import {
 import type {
   ChallengeParams,
   Credential,
+  Receipt,
   SessionReceipt,
 } from "./types.js";
 import {
@@ -118,6 +120,72 @@ describe("receipts against Go reference vectors", () => {
 
     expect(parsed.refundStatus).toBe("skipped");
     expect(parsed.refundSats).toBeUndefined();
+  });
+
+  it("emits receipt headers byte-identical to the reference", () => {
+    // The two receipt structs the reference declares do not agree on field
+    // order, so reproducing the bytes means reproducing both orders. The
+    // charge vector is the base receipt; the two close vectors are the
+    // session receipt.
+    for (const v of receiptVectors) {
+      expect(encodeReceipt(JSON.parse(v.json) as Receipt)).toBe(v.header);
+    }
+  });
+
+  it("does not let the caller's property order reach the wire", () => {
+    // JSON.stringify would follow insertion order, which would make the
+    // bytes depend on how the seller happened to build the object.
+    const refunded = receiptVectors.find(
+      (v) => v.name === "session close refunded",
+    );
+    const receipt = JSON.parse(refunded!.json) as SessionReceipt;
+
+    const scrambled: SessionReceipt = {
+      refundStatus: receipt.refundStatus as SessionReceipt["refundStatus"],
+      timestamp: receipt.timestamp,
+      status: receipt.status,
+      refundSats: receipt.refundSats as number,
+      reference: receipt.reference,
+      method: receipt.method,
+    };
+
+    expect(encodeReceipt(scrambled)).toBe(refunded!.header);
+  });
+
+  it("carries a field the reference does not declare rather than dropping it", () => {
+    const encoded = encodeReceipt({
+      status: "success",
+      method: "lightning",
+      timestamp: "2026-03-10T21:00:00Z",
+      reference: "bc230847",
+      settledBy: "somebody",
+    } as Receipt & { settledBy: string });
+
+    expect(JSON.parse(Buffer.from(encoded, "base64url").toString())).toEqual({
+      status: "success",
+      method: "lightning",
+      timestamp: "2026-03-10T21:00:00Z",
+      reference: "bc230847",
+      settledBy: "somebody",
+    });
+  });
+
+  it("refuses a receipt claiming a status the protocol does not define", () => {
+    // The protocol defines exactly one status, and a receipt is the only
+    // thing a client keeps as evidence that a payment settled. One that
+    // says "failed" is evidence of the opposite.
+    const failed = Buffer.from(
+      JSON.stringify({
+        status: "failed",
+        method: "lightning",
+        timestamp: "2026-03-10T21:00:00Z",
+        reference: "bc230847",
+      }),
+    ).toString("base64url");
+
+    expect(() => parseReceiptHeader(failed)).toThrow(
+      /receipt status is "failed"/,
+    );
   });
 });
 

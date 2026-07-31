@@ -14,9 +14,11 @@ import {
 import { canonicalize, type JsonValue } from "./jcs.js";
 import {
   AUTH_SCHEME,
+  RECEIPT_STATUS_SUCCESS,
   type ChallengeParams,
   type Credential,
   type Receipt,
+  type SessionReceipt,
 } from "./types.js";
 
 /**
@@ -291,10 +293,63 @@ export function decodeRequestObject<T>(encoded: string): T {
   }
 }
 
-/** Encode a receipt as a `Payment-Receipt` header value. */
+/**
+ * Encode a receipt as a `Payment-Receipt` header value.
+ *
+ * Key order comes from the receipt's contents rather than from the order the
+ * caller happened to build the object in, the same discipline
+ * `encodeCredential` holds and for the same reason: a wire capture taken on
+ * either side of the exchange should read the same. Nothing signs a receipt,
+ * so this costs nothing if it is wrong; it is here so the byte-for-byte
+ * claim these codecs make is one claim rather than two.
+ *
+ * The reference implementation declares two receipt structs, and they do not
+ * agree on order. A receipt carrying either refund field is a session
+ * receipt and takes the session order. One case is invisible to that test: a
+ * session receipt for an action with no refund, which is emitted in the base
+ * order here and in the session order by the reference.
+ */
 export function encodeReceipt(receipt: Receipt): string {
-  return encodeBase64UrlText(JSON.stringify(receipt));
+  const isSession =
+    (receipt as SessionReceipt).refundSats !== undefined ||
+    (receipt as SessionReceipt).refundStatus !== undefined;
+
+  const fields = receipt as unknown as Record<string, unknown>;
+  const order = isSession ? SESSION_RECEIPT_ORDER : RECEIPT_ORDER;
+  const ordered: Record<string, unknown> = {};
+
+  for (const field of order) {
+    const value = fields[field];
+    if (value !== undefined) ordered[field] = value;
+  }
+
+  // Anything the reference does not declare still goes out, after the fields
+  // it does, so an extension field is reordered rather than dropped.
+  for (const [key, value] of Object.entries(receipt)) {
+    if (!(key in ordered) && value !== undefined) ordered[key] = value;
+  }
+
+  return encodeBase64UrlText(JSON.stringify(ordered));
 }
+
+/** Field order of the reference implementation's base receipt struct. */
+const RECEIPT_ORDER = [
+  "status",
+  "method",
+  "timestamp",
+  "reference",
+  "challengeId",
+] as const;
+
+/** Field order of the reference implementation's session receipt struct. */
+const SESSION_RECEIPT_ORDER = [
+  "method",
+  "reference",
+  "status",
+  "timestamp",
+  "refundSats",
+  "refundStatus",
+] as const;
 
 /**
  * Decode a `Payment-Receipt` header value.
@@ -329,6 +384,13 @@ export function parseReceiptHeader<T extends Receipt = Receipt>(
     if (typeof parsed[field] !== "string" || parsed[field] === "") {
       throw new Error(`mpp: receipt missing ${field}`);
     }
+  }
+
+  if (parsed.status !== RECEIPT_STATUS_SUCCESS) {
+    throw new Error(
+      `mpp: receipt status is ${JSON.stringify(parsed.status)}, and the ` +
+        `protocol defines only ${JSON.stringify(RECEIPT_STATUS_SUCCESS)}`,
+    );
   }
 
   return parsed as unknown as T;
