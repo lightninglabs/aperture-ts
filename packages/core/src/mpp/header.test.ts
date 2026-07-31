@@ -21,87 +21,231 @@ import type {
 import {
   loadGoVectors,
   type ChallengeHeaderVector,
+  type ChallengeListVector,
   type CredentialVector,
   type ReceiptVector,
 } from "./goVectors.js";
+import { decodeBase64UrlText } from "./base64url.js";
 
 let headerVectors: ChallengeHeaderVector[];
+let listVectors: ChallengeListVector[];
 let credentialVectors: CredentialVector[];
 let receiptVectors: ReceiptVector[];
 
 beforeAll(async () => {
   const vectors = await loadGoVectors();
   headerVectors = vectors.challengeHeaders;
+  listVectors = vectors.challengeLists;
   credentialVectors = vectors.credentials;
   receiptVectors = vectors.receipts;
 });
 
-describe("challenge headers against Go reference vectors", () => {
+/**
+ * Whether a JSON document holds an integer JavaScript cannot represent
+ * exactly.
+ *
+ * The vector file deliberately carries a few, because the peer is Go and an
+ * int64 goes places a double does not. Parsing one is lossy in either
+ * direction and both sides know it; re-emitting one is where the loss
+ * becomes visible, so the emission checks below skip exactly those and this
+ * predicate is what they skip on.
+ */
+function hasUnsafeInteger(json: string): boolean {
+  for (const match of json.matchAll(/-?\d{16,}/g)) {
+    if (!Number.isSafeInteger(Number(match[0]))) return true;
+  }
+  return false;
+}
+
+describe("challenge headers against the Go vector file", () => {
+  it("loads a non-trivial vector set", () => {
+    expect(headerVectors.length).toBeGreaterThan(0);
+  });
+
   it("parses every header the reference emits", () => {
     for (const v of headerVectors) {
-      const parsed = parseChallengeHeader(v.header);
-
-      expect(parsed.id).toBe(v.params.ID);
-      expect(parsed.realm).toBe(v.params.Realm);
-      expect(parsed.method).toBe(v.params.Method);
-      expect(parsed.intent).toBe(v.params.Intent);
-      expect(parsed.request).toBe(v.params.Request);
-      expect(parsed.expires ?? "").toBe(v.params.Expires);
-      expect(parsed.digest ?? "").toBe(v.params.Digest);
-      expect(parsed.description ?? "").toBe(v.params.Description);
-      expect(parsed.opaque ?? "").toBe(v.params.Opaque);
+      expect(parseChallengeHeader(v.header)).toEqual(v.parsed);
     }
   });
 
   it("emits headers byte-identical to the reference", () => {
     for (const v of headerVectors) {
-      expect(formatChallengeHeader(parseChallengeHeader(v.header))).toBe(
+      expect(formatChallengeHeader(v.params as ChallengeParams)).toBe(
         v.header,
       );
     }
   });
 
-  it("keeps a comma inside a description out of the parameter split", () => {
-    const withComma = headerVectors.find(
-      (v) => v.name === "description with spaces and comma",
+  it("round-trips a value the grammar has to escape", () => {
+    // A quotation mark or a reverse solidus inside a parameter is written
+    // escaped and has to come back unescaped, or the credential echoes
+    // something the server never signed.
+    for (const name of [
+      "quotation mark in a parameter",
+      "reverse solidus in a parameter",
+    ]) {
+      const v = headerVectors.find((entry) => entry.name === name);
+      expect(v, name).toBeDefined();
+      expect(parseChallengeHeader(v!.header)).toEqual(v!.params);
+    }
+  });
+
+  it("keeps a separator inside a quoted value out of the parse", () => {
+    // A description carrying a comma, an equals sign, or something that
+    // looks like the start of another challenge must not split the header.
+    const v = headerVectors.find(
+      (entry) => entry.name === "separators inside a parameter",
     );
 
-    expect(withComma).toBeDefined();
-    expect(parseChallengeHeader(withComma!.header).description).toBe(
-      "Weather report, hourly",
+    expect(v).toBeDefined();
+    expect(parseChallengeHeader(v!.header).realm).toBe("one, two=three");
+    expect(parseChallengeHeader(v!.header).description).toBe(
+      'Payment id="spoofed"',
     );
   });
 });
 
-describe("credentials against Go reference vectors", () => {
+describe("challenge lists against the Go vector file", () => {
+  it("loads both parseable and unusable cases", () => {
+    expect(listVectors.some((v) => v.error === true)).toBe(true);
+    expect(listVectors.some((v) => (v.challenges ?? []).length > 1)).toBe(true);
+  });
+
+  it("recovers every challenge the reference recovers, in order", () => {
+    const mismatches = listVectors
+      .filter((v) => v.error !== true)
+      .map((v) => ({
+        name: v.name,
+        want: v.challenges ?? [],
+        got: parsePaymentChallenges(v.header),
+      }))
+      .filter((m) => JSON.stringify(m.want) !== JSON.stringify(m.got));
+
+    expect(mismatches).toEqual([]);
+  });
+
+  it("finds nothing in a value the reference calls unusable", () => {
+    for (const v of listVectors) {
+      if (v.error !== true) continue;
+      expect(parsePaymentChallenges(v.header), v.name).toEqual([]);
+    }
+  });
+});
+
+describe("credentials against the Go vector file", () => {
+  it("loads both accepted and rejected cases", () => {
+    expect(credentialVectors.some((v) => v.error === true)).toBe(true);
+  });
+
   it("parses every credential header the reference emits", () => {
     for (const v of credentialVectors) {
-      const parsed = parseCredential(v.header);
-      expect(parsed).toEqual(JSON.parse(v.json));
+      if (v.error === true) continue;
+      expect(parseCredential(v.header), v.name).toEqual(
+        JSON.parse(v.credentialJson),
+      );
     }
+  });
+
+  it("rejects every credential header the reference rejects", () => {
+    const accepted = credentialVectors
+      .filter((v) => v.error === true)
+      .filter((v) => {
+        try {
+          parseCredential(v.header);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .map((v) => v.name);
+
+    expect(accepted).toEqual([]);
   });
 
   it("emits credential JSON byte-identical to the reference", () => {
     // Nothing signs these bytes, but matching the reference means a wire
     // capture from either side reads the same, which is what makes a
     // mismatched field obvious during integration.
+    //
+    // Two vectors are left out. One spells the scheme token in lowercase to
+    // exercise the parser, and is not a statement about what an emitter
+    // produces. The other is the subject of the next test.
+    let checked = 0;
+
     for (const v of credentialVectors) {
-      const credential = JSON.parse(v.json) as Credential;
-      expect(formatAuthorizationHeader(credential)).toBe(v.header);
+      if (v.error === true) continue;
+      if (!v.header.startsWith("Payment ")) continue;
+      if (/\\u00(26|3c|3e)/.test(v.credentialJson)) continue;
+
+      const credential = JSON.parse(v.credentialJson) as Credential;
+      expect(formatAuthorizationHeader(credential), v.name).toBe(v.header);
+      checked += 1;
     }
+
+    expect(checked).toBeGreaterThan(1);
+  });
+
+  it("does not escape HTML characters inside a credential either", () => {
+    // The reference's canonicalizer no longer escapes "<", ">" and "&", but
+    // its credential encoder still does, because that one is a plain
+    // json.Marshal. So the two sides emit different bytes for a credential
+    // echoing a description like "Q&A endpoint", and decode each other's
+    // fine.
+    //
+    // This side does not follow. Nothing signs a credential: a seller
+    // recomputes the challenge HMAC from the decoded parameters, and
+    // description is not one of the seven slots that HMAC covers. Adding
+    // HTML escaping back to one encoder to match a peer that is escaping by
+    // accident would reintroduce, one function over, exactly the divergence
+    // that was just taken out of the canonicalizer.
+    const v = credentialVectors.find(
+      (entry) => entry.name === "session open credential with a source",
+    );
+    expect(v).toBeDefined();
+    expect(v!.credentialJson).toContain("Q\\u0026A endpoint");
+
+    const credential = JSON.parse(v!.credentialJson) as Credential;
+    const emitted = formatAuthorizationHeader(credential);
+
+    expect(emitted).not.toBe(v!.header);
+    expect(
+      decodeBase64UrlText(emitted.slice("Payment ".length)),
+    ).toContain("Q&A endpoint");
+
+    // What has to hold, and does: each side reads the other's bytes back to
+    // the same document.
+    expect(parseCredential(emitted)).toEqual(parseCredential(v!.header));
   });
 });
 
-describe("receipts against Go reference vectors", () => {
+describe("receipts against the Go vector file", () => {
+  it("loads a non-trivial vector set", () => {
+    expect(receiptVectors.length).toBeGreaterThan(0);
+  });
+
+  it("decodes every header to the document the reference encoded", () => {
+    // Not every vector in this group is a receipt: the mid-stream top-up
+    // event travels the same way and is checked the same way, as bytes.
+    for (const v of receiptVectors) {
+      expect(
+        JSON.parse(decodeBase64UrlText(v.header)),
+        v.name,
+      ).toEqual(JSON.parse(v.receiptJson));
+    }
+  });
+
   it("parses every receipt the reference emits", () => {
     for (const v of receiptVectors) {
-      expect(parseReceiptHeader(v.header)).toEqual(JSON.parse(v.json));
+      const document = JSON.parse(v.receiptJson) as Record<string, unknown>;
+      if (document.status === undefined) continue;
+
+      expect(parseReceiptHeader(v.header), v.name).toEqual(document);
     }
   });
 
   it("reads the refund fields off a session close receipt", () => {
     const refunded = receiptVectors.find(
-      (v) => v.name === "session close refunded",
+      (v) => v.name === "session close with a refund",
     );
     const parsed = parseReceiptHeader<SessionReceipt>(refunded!.header);
 
@@ -111,10 +255,10 @@ describe("receipts against Go reference vectors", () => {
 
   it("reads a skipped refund, where the reference omits refundSats", () => {
     const skipped = receiptVectors.find(
-      (v) => v.name === "session close skipped",
+      (v) => v.name === "session close with nothing to refund",
     );
 
-    expect(skipped!.json).not.toContain("refundSats");
+    expect(skipped!.receiptJson).not.toContain("refundSats");
 
     const parsed = parseReceiptHeader<SessionReceipt>(skipped!.header);
 
@@ -125,20 +269,53 @@ describe("receipts against Go reference vectors", () => {
   it("emits receipt headers byte-identical to the reference", () => {
     // The two receipt structs the reference declares do not agree on field
     // order, so reproducing the bytes means reproducing both orders. The
-    // charge vector is the base receipt; the two close vectors are the
-    // session receipt.
+    // charge vectors are the base receipt; the close vectors are the session
+    // receipt.
+    //
+    // The vectors carrying an int64 past 2^53 are left out. A double cannot
+    // hold one, so this side reads it as the nearest representable value and
+    // re-emits that, which is a lossy round trip rather than a disagreement
+    // about the format. The check below pins where that starts.
+    let checked = 0;
+
     for (const v of receiptVectors) {
-      expect(encodeReceipt(JSON.parse(v.json) as Receipt)).toBe(v.header);
+      const document = JSON.parse(v.receiptJson) as Record<string, unknown>;
+      if (document.status === undefined) continue;
+      if (hasUnsafeInteger(v.receiptJson)) continue;
+
+      expect(encodeReceipt(document as unknown as Receipt), v.name).toBe(
+        v.header,
+      );
+      checked += 1;
     }
+
+    expect(checked).toBeGreaterThan(2);
+  });
+
+  it("cannot re-emit a refund larger than a double can hold", () => {
+    // Worth stating rather than skipping in silence. Every amount the
+    // protocol itself defines travels as a decimal string for exactly this
+    // reason; `refundSats` is the one place a raw JSON integer reaches a
+    // JavaScript client, and past 2^53 it arrives rounded.
+    const huge = receiptVectors.find(
+      (v) => v.name === "largest refund an int64 can hold",
+    );
+
+    expect(huge).toBeDefined();
+    const parsed = parseReceiptHeader<SessionReceipt>(huge!.header);
+
+    expect(parsed.refundSats).toBe(9223372036854775807);
+    expect(Number.isSafeInteger(parsed.refundSats as number)).toBe(false);
+    expect(encodeReceipt(parsed)).not.toBe(huge!.header);
   });
 
   it("does not let the caller's property order reach the wire", () => {
     // JSON.stringify would follow insertion order, which would make the
     // bytes depend on how the seller happened to build the object.
     const refunded = receiptVectors.find(
-      (v) => v.name === "session close refunded",
+      (v) => v.name === "session close with a refund",
     );
-    const receipt = JSON.parse(refunded!.json) as SessionReceipt;
+    const receipt = JSON.parse(refunded!.receiptJson) as SessionReceipt;
 
     const scrambled: SessionReceipt = {
       refundStatus: receipt.refundStatus as SessionReceipt["refundStatus"],

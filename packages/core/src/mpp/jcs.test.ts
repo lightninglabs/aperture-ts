@@ -5,23 +5,24 @@
  */
 
 import { describe, it, expect, beforeAll } from "vitest";
-import { canonicalize, canonicalizeJson, compareCodePoints } from "./jcs.js";
-import { encodeBase64UrlText } from "./base64url.js";
-import { loadGoVectors, type JcsVector } from "./goVectors.js";
+import { canonicalize, canonicalizeJson, compareUtf16 } from "./jcs.js";
+import { loadGoVectors, type CanonicalVector } from "./goVectors.js";
 
-let vectors: JcsVector[];
+let vectors: CanonicalVector[];
 
 beforeAll(async () => {
-  vectors = (await loadGoVectors()).jcs;
+  vectors = (await loadGoVectors()).canonicalization;
 });
 
-describe("canonicalizeJson against Go reference vectors", () => {
+describe("canonicalizeJson against the Go vector file", () => {
   it("loads a non-trivial vector set", () => {
     expect(vectors.length).toBeGreaterThan(20);
+    expect(vectors.some((v) => v.error === true)).toBe(true);
   });
 
   it("reproduces every canonical form byte for byte", () => {
     const mismatches = vectors
+      .filter((v) => v.error !== true)
       .filter((v) => canonicalizeJson(v.input) !== v.canonical)
       .map((v) => ({
         name: v.name,
@@ -32,27 +33,50 @@ describe("canonicalizeJson against Go reference vectors", () => {
     expect(mismatches).toEqual([]);
   });
 
-  it("reproduces the base64url of every canonical form", () => {
-    for (const v of vectors) {
-      expect(encodeBase64UrlText(canonicalizeJson(v.input))).toBe(v.encoded);
-    }
+  it("refuses every input the reference refuses", () => {
+    const accepted = vectors
+      .filter((v) => v.error === true)
+      .filter((v) => {
+        try {
+          canonicalizeJson(v.input);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .map((v) => v.name);
+
+    expect(accepted).toEqual([]);
   });
 
   it("is idempotent: canonicalizing canonical output changes nothing", () => {
     for (const v of vectors) {
-      expect(canonicalizeJson(v.canonical)).toBe(v.canonical);
+      if (v.error === true) continue;
+      expect(canonicalizeJson(v.canonical as string)).toBe(v.canonical);
     }
   });
 });
 
-describe("canonicalize divergences from RFC 8785 that match the reference", () => {
-  it("escapes the HTML-sensitive characters Go escapes", () => {
-    // RFC 8785 would leave all three literal. Go's encoding/json escapes
-    // them, so a canonicalizer that follows the RFC here would compute a
-    // different HMAC input than the server it is talking to.
-    expect(canonicalize({ s: "a/b&c<d>e" })).toBe(
-      '{"s":"a/b\\u0026c\\u003cd\\u003ee"}',
-    );
+describe("canonicalize escaping, per RFC 8785 section 3.2.2.2", () => {
+  it("leaves the HTML-sensitive characters literal", () => {
+    // A canonicalizer built on a JSON library inherits that library's
+    // HTML-safety escaping, and the output still parses, so nothing short of
+    // a byte comparison notices. `description` is free-form text inside the
+    // HMAC, which is how a description as ordinary as "Q&A endpoint" ends up
+    // hashing differently on the two sides.
+    expect(canonicalize({ s: "a/b&c<d>e" })).toBe('{"s":"a/b&c<d>e"}');
+  });
+
+  it("leaves the two line separators literal", () => {
+    // Go's encoding/json escapes these so its output can be inlined in a
+    // JavaScript source file. That is not a concern this protocol has, and
+    // JSON.stringify, which the RFC defers to, leaves them alone.
+    const separators = "a\u2028b\u2029c";
+    expect(canonicalize({ s: separators })).toBe(`{"s":"${separators}"}`);
+  });
+
+  it("leaves the solidus and U+007F literal", () => {
+    expect(canonicalize({ s: "a/b\u007f" })).toBe('{"s":"a/b\u007f"}');
   });
 
   it("uses the short form for every control character that has one", () => {
@@ -71,30 +95,36 @@ describe("canonicalize divergences from RFC 8785 that match the reference", () =
       '{"s":"\\u0000\\u000b\\u001b\\u001f"}',
     );
   });
+});
 
-  it("escapes the two line separators", () => {
-    const separators = "a\u2028b\u2029c";
-    expect(canonicalize({ s: separators })).toBe(
-      '{"s":"a\\u2028b\\u2029c"}',
-    );
-  });
-
-  it("orders keys by code point, not by UTF-16 code unit", () => {
-    // A UTF-16 comparison sorts the astral character first, because its
-    // leading surrogate 0xD83D is below 0xFFFD. Code point order, which is
-    // what Go's byte-wise sort produces, puts it last.
+describe("canonicalize member ordering, per RFC 8785 section 3.2.3", () => {
+  it("orders keys by UTF-16 code unit, not by code point", () => {
+    // The whole disagreement between the two orderings lives in this one
+    // range. An astral character encodes in UTF-16 as a surrogate pair
+    // starting at U+D800, so it sorts below U+E000, while a code point
+    // comparison puts it above everything in the basic multilingual plane.
     const canonical = canonicalize({
-      "\u{1F600}": "emoji",
-      "\uFFFD": "replacement",
-      a: "ascii",
+      "\uE000": "private use",
+      "\u{10000}": "astral",
+      "\uFFFF": "noncharacter",
+      "\uD7FF": "below the surrogates",
     });
 
     expect(canonical).toBe(
-      '{"a":"ascii","\uFFFD":"replacement","\u{1F600}":"emoji"}',
+      '{"\uD7FF":"below the surrogates","\u{10000}":"astral",' +
+        '"\uE000":"private use","\uFFFF":"noncharacter"}',
     );
-    expect(canonical.indexOf("\uFFFD")).toBeLessThan(
-      canonical.indexOf("\u{1F600}"),
-    );
+  });
+
+  it("agrees with what JavaScript's own sort would do", () => {
+    // RFC 8785 chose UTF-16 order precisely because it is what a JavaScript
+    // peer produces for free, so anything more elaborate than a plain
+    // comparison here would be a way to get it wrong.
+    const keys = ["\uE000", "\u{10000}", "\uFFFF", "\uD7FF", "a", "", "Z"];
+    const object = Object.fromEntries(keys.map((k) => [k, 1]));
+
+    const emitted = objectKeyOrders(canonicalize(object))[0] as string[];
+    expect(emitted).toEqual([...keys].sort());
   });
 });
 
@@ -138,14 +168,14 @@ describe("canonicalize value handling", () => {
   });
 });
 
-describe("compareCodePoints", () => {
+describe("compareUtf16", () => {
   it("is a total order consistent with sorting", () => {
     const input = ["b", "a", "", "aa", "A", "\u{1F600}", "\uFFFD", "z"];
-    const sorted = [...input].sort(compareCodePoints);
+    const sorted = [...input].sort(compareUtf16);
 
     for (let i = 1; i < sorted.length; i++) {
       expect(
-        compareCodePoints(sorted[i - 1] as string, sorted[i] as string),
+        compareUtf16(sorted[i - 1] as string, sorted[i] as string),
       ).toBeLessThanOrEqual(0);
     }
   });
@@ -159,10 +189,17 @@ describe("compareCodePoints", () => {
     ];
 
     for (const [a, b] of pairs) {
-      expect(Math.sign(compareCodePoints(a, b))).toBe(
-        -Math.sign(compareCodePoints(b, a)),
+      expect(Math.sign(compareUtf16(a, b))).toBe(
+        -Math.sign(compareUtf16(b, a)),
       );
     }
+  });
+
+  it("sorts an astral character below the private use area", () => {
+    // This is the one pair a code point comparison gets backwards, and the
+    // reason this function exists as something other than a bare "<".
+    expect(compareUtf16("\u{1F600}", "\uE000")).toBeLessThan(0);
+    expect(compareUtf16("\u{1F600}", "\uFFFD")).toBeLessThan(0);
   });
 });
 
@@ -200,28 +237,26 @@ describe("canonicalize properties", () => {
     }
   });
 
-  it("emits object keys in code point order", () => {
+  it("emits object keys in UTF-16 code unit order", () => {
     for (let seed = 0; seed < ITERATIONS; seed++) {
       const canonical = canonicalize(randomJson(makeRng(seed), 3));
 
       for (const keys of objectKeyOrders(canonical)) {
         for (let i = 1; i < keys.length; i++) {
           expect(
-            compareCodePoints(keys[i - 1] as string, keys[i] as string),
+            compareUtf16(keys[i - 1] as string, keys[i] as string),
           ).toBeLessThan(0);
         }
       }
     }
   });
 
-  it("never spells out an escape that has a short form", () => {
-    // Two canonicalizers that disagree on which form to use still parse
-    // each other's output, so nothing but a byte comparison catches this.
-    // The rule is the reference implementation's: a six-character escape
-    // appears only for a character that has no two-character form and
-    // cannot be written literally.
+  it("escapes nothing that RFC 8785 leaves literal", () => {
+    // Two canonicalizers that disagree on which form to use still parse each
+    // other's output, so nothing but a byte comparison catches this. Section
+    // 3.2.2.2 admits a six-character escape for exactly one reason: a C0
+    // control that has no two-character shorthand.
     const shortForm = new Set([0x08, 0x09, 0x0a, 0x0c, 0x0d]);
-    const htmlEscaped = new Set([0x26, 0x3c, 0x3e, 0x2028, 0x2029]);
 
     for (let seed = 0; seed < ITERATIONS; seed++) {
       const canonical = canonicalize(randomJson(makeRng(seed), 3));
@@ -230,7 +265,7 @@ describe("canonicalize properties", () => {
         const code = Number.parseInt(match[1] as string, 16);
 
         expect(shortForm.has(code)).toBe(false);
-        expect(code < 0x20 || htmlEscaped.has(code)).toBe(true);
+        expect(code).toBeLessThan(0x20);
       }
     }
   });
@@ -277,17 +312,22 @@ function makeRng(seed: number): () => number {
 
 /**
  * The character pool the generators draw from. It leans on the characters
- * that have historically broken canonicalizers: the escape-triggering ones,
- * the HTML-sensitive ones, non-ASCII, and one astral character to exercise
- * the code point ordering.
+ * that have historically broken canonicalizers: the ones that trigger an
+ * escape, the ones a JSON library escapes when it should not, non-ASCII, and
+ * characters on both sides of the surrogate range to exercise the ordering.
  *
  * All five short-form controls are here, backspace and form feed included.
  * Leaving those two out is what let them go unnoticed: they are the only
  * escapes the protocol's own payloads never produce, so no generator that
- * skips them can tell a short form from a long one.
+ * skips them can tell a short form from a long one. The same argument covers
+ * "<", ">", "&", U+2028 and U+2029, which must come out literal.
  */
 const CHARS = Array.from(
-  'ab-_ AZ09"\\\b\f\n\r\t\v<>&\u00e9\u4e2d\uFFFD\u{1F600}\u2028',
+  'ab-_ AZ09"\\' +
+    "\b\f\n\r\t\v\u0000\u001f\u007f" +
+    "<>&/" +
+    "\u00e9\u4e2d\ud7ff\ue000\uffff\ufffd" +
+    "\u{10000}\u{1f600}\u2028\u2029",
 )
 
 function randomString(rng: () => number, maxLength: number): string {

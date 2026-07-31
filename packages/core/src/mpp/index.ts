@@ -5,7 +5,7 @@ export {
   decodeBase64Url,
   decodeBase64UrlText,
 } from "./base64url.js";
-export { canonicalize, canonicalizeJson, compareCodePoints, type JsonValue } from "./jcs.js";
+export { canonicalize, canonicalizeJson, compareUtf16, type JsonValue } from "./jcs.js";
 export {
   buildChallengeHmacInput,
   computeChallengeId,

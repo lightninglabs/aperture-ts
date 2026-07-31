@@ -66,6 +66,28 @@ export function encodeBase64UrlText(text: string): string {
 export function decodeBase64Url(encoded: string): Uint8Array {
   const trimmed = encoded.replace(/=+$/, "");
 
+  // Padding is accepted but not renegotiated. An input that pads has to pad
+  // the way RFC 4648 says: at most two characters, bringing the whole string
+  // to a multiple of four. Stripping whatever trailing "=" happens to be
+  // there would let "aGVsbG8===" and "aGVsbG8" both stand for the same
+  // bytes, which is the second-spelling problem this decoder exists to
+  // refuse.
+  const padding = encoded.length - trimmed.length;
+  if (padding > 0) {
+    if (padding > 2) {
+      throw new Error(
+        `mpp: base64url input has ${padding} padding characters, at most ` +
+          "2 are allowed",
+      );
+    }
+    if (encoded.length % 4 !== 0) {
+      throw new Error(
+        `mpp: padded base64url input has length ${encoded.length}, which ` +
+          "is not a multiple of 4",
+      );
+    }
+  }
+
   const remainder = trimmed.length % 4;
   if (remainder === 1) {
     throw new Error(

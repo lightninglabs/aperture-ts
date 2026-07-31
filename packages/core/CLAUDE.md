@@ -50,7 +50,7 @@ seller-side Worker runtime and the buyer-side client SDK.
 - Service caveat format is `services=name:tier,name2:tier2` matching Go's `encodeServicesCaveatValue`.
 - Timeout caveat condition is `{serviceName}_valid_until` with Unix timestamp value.
 - Key derivation: `HKDF(masterKey, "seller:{sellerId}:v1")` using SHA-256 with zero salt.
-- MPP canonicalization reproduces aperture's Go `mpp` package byte for byte, including its two departures from RFC 8785 (code-point key ordering, HTML-sensitive and line-separator escaping). Interoperating with the reference beats matching the RFC.
+- MPP canonicalization follows RFC 8785 exactly: member names sorted by UTF-16 code unit, strings escaped the way `JSON.stringify` escapes them and no further. It is checked against the vector file aperture's Go `mpp` package generates, which is copied into `testdata/mpp/vectors.json` verbatim and never hand-edited.
 - A challenge's `request` and `opaque` are echoed as the strings they arrived as. Re-canonicalizing them client-side would risk changing the bytes the server's HMAC covers.
 - The challenge-id HMAC has exactly seven pipe-joined slots: realm, method, intent, request, expires, digest, opaque. `description` is deliberately outside the binding.
 

@@ -5,28 +5,28 @@ import {
   verifyChallengeId,
 } from "./challengeId.js";
 import type { ChallengeParams } from "./types.js";
-import { loadGoVectors, type ChallengeIdVector } from "./goVectors.js";
+import { fromHex, loadGoVectors, type ChallengeIdVector } from "./goVectors.js";
+import { createHmac } from "node:crypto";
 
 let vectors: ChallengeIdVector[];
+let secret: Uint8Array;
 
 beforeAll(async () => {
-  vectors = (await loadGoVectors()).challengeId;
+  const loaded = await loadGoVectors();
+  vectors = loaded.challengeIds;
+  secret = fromHex(loaded.hmacSecretHex);
 });
 
+/** The parameters a vector binds, with the computed id left out. */
 function toParams(v: ChallengeIdVector): ChallengeParams {
-  return {
-    id: "",
-    realm: v.realm,
-    method: v.method,
-    intent: v.intent,
-    request: v.request,
-    expires: v.expires || undefined,
-    digest: v.digest || undefined,
-    opaque: v.opaque || undefined,
-  };
+  return { ...v.params, id: "" };
 }
 
-describe("challenge id against Go reference vectors", () => {
+describe("challenge id against the Go vector file", () => {
+  it("loads a non-trivial vector set", () => {
+    expect(vectors.length).toBeGreaterThan(0);
+  });
+
   it("reproduces the pipe-delimited HMAC input", () => {
     for (const v of vectors) {
       expect(buildChallengeHmacInput(toParams(v))).toBe(v.hmacInput);
@@ -35,31 +35,74 @@ describe("challenge id against Go reference vectors", () => {
 
   it("reproduces every challenge id", async () => {
     for (const v of vectors) {
-      expect(await computeChallengeId(v.secret, toParams(v))).toBe(v.id);
+      expect(await computeChallengeId(secret, toParams(v))).toBe(v.params.id);
     }
   });
 
   it("verifies every challenge id the reference issued", async () => {
     for (const v of vectors) {
-      expect(await verifyChallengeId(v.secret, toParams(v), v.id)).toBe(true);
+      expect(
+        await verifyChallengeId(secret, toParams(v), v.params.id),
+      ).toBe(true);
     }
   });
 
-  it("covers a secret longer than the HMAC block size", async () => {
-    const long = vectors.find((v) => v.name === "long secret");
-    expect(long?.secret.length).toBeGreaterThan(64);
-    expect(await computeChallengeId(long!.secret, toParams(long!))).toBe(
-      long!.id,
+  it("carries the reference's own delimiter ambiguity", async () => {
+    // The seven slots are joined with "|" and the realm and method are free
+    // text, so two different challenges can produce one HMAC input. The
+    // vector file names the pair, which means the reference knows and has
+    // decided to live with it. Reproducing it is what interoperating means
+    // here, and pinning it is what keeps a future divergence visible.
+    const colliding = vectors.filter(
+      (v) => v.hmacInput === "a|b|lightning|charge|cQ|||",
     );
+
+    expect(colliding).toHaveLength(2);
+    expect(colliding[0]?.params.realm).not.toBe(colliding[1]?.params.realm);
+    expect(colliding[0]?.params.id).toBe(colliding[1]?.params.id);
+  });
+});
+
+describe("challenge id key handling", () => {
+  // Node's HMAC accepts key lengths that Web Crypto refuses, which makes it
+  // an independent check on the two cases this module handles specially.
+  // The Go vector file covers neither, so these stand on the HMAC spec
+  // rather than on a peer's output.
+  const params: ChallengeParams = {
+    id: "",
+    realm: "api.example.com",
+    method: "lightning",
+    intent: "charge",
+    request: "eyJhbW91bnQiOiIxMDAifQ",
+  };
+
+  function referenceId(key: Uint8Array): string {
+    return createHmac("sha256", key)
+      .update(buildChallengeHmacInput(params))
+      .digest("base64url");
+  }
+
+  it("matches a plain HMAC for an ordinary secret", async () => {
+    const key = new TextEncoder().encode("test-server-secret-key-32-bytes!");
+    expect(await computeChallengeId(key, params)).toBe(referenceId(key));
   });
 
-  it("covers an empty secret, which Web Crypto refuses to import", async () => {
-    // HMAC pads any key shorter than the block size with zeros, so an empty
-    // key and a single zero byte produce the same tag. Web Crypto rejects
-    // the former outright, and the reference implementation accepts it.
-    const empty = vectors.find((v) => v.name === "empty secret");
-    expect(empty?.secret).toBe("");
-    expect(await computeChallengeId("", toParams(empty!))).toBe(empty!.id);
+  it("matches a plain HMAC for a secret past the block size", async () => {
+    // A key longer than the 64-byte block is hashed down first, so getting
+    // this wrong is silent rather than fatal.
+    const key = new TextEncoder().encode("k".repeat(100));
+    expect(key.length).toBeGreaterThan(64);
+    expect(await computeChallengeId(key, params)).toBe(referenceId(key));
+  });
+
+  it("matches a plain HMAC for an empty secret", async () => {
+    // Web Crypto refuses a zero-length HMAC key outright, so this module
+    // substitutes a single zero byte. HMAC pads any key shorter than the
+    // block with zeros, which is why the substitution produces the same tag
+    // the empty key would, and this is the check on that reasoning.
+    expect(await computeChallengeId("", params)).toBe(
+      referenceId(new Uint8Array(0)),
+    );
   });
 });
 

@@ -5,7 +5,12 @@ import {
   encodeBase64Url,
   encodeBase64UrlText,
 } from "./base64url.js";
-import { loadGoVectors, type Base64Vector } from "./goVectors.js";
+import {
+  fromHex,
+  loadGoVectors,
+  toHex,
+  type Base64Vector,
+} from "./goVectors.js";
 
 let vectors: Base64Vector[];
 
@@ -13,22 +18,56 @@ beforeAll(async () => {
   vectors = (await loadGoVectors()).base64url;
 });
 
-describe("base64url against Go reference vectors", () => {
-  it("encodes every vector identically", () => {
+/** The bytes a vector encodes, which an empty payload leaves unstated. */
+function bytesOf(v: Base64Vector): Uint8Array {
+  return fromHex(v.decodedHex ?? "");
+}
+
+describe("base64url against the Go vector file", () => {
+  it("loads both accepted and rejected cases", () => {
+    expect(vectors.some((v) => v.error === true)).toBe(true);
+    expect(vectors.some((v) => v.canonical && v.error !== true)).toBe(true);
+  });
+
+  it("encodes to the spelling the reference emits", () => {
+    // Only a canonical vector says anything about the encoder. The others
+    // are spellings the decoder has to accept, not ones it may produce.
     for (const v of vectors) {
-      expect(encodeBase64Url(Uint8Array.from(v.bytes))).toBe(v.encoded);
+      if (!v.canonical || v.error === true) continue;
+      expect(encodeBase64Url(bytesOf(v))).toBe(v.encoded);
     }
   });
 
-  it("decodes every vector back to the original bytes", () => {
+  it("decodes every accepted spelling to the same bytes", () => {
     for (const v of vectors) {
-      expect(Array.from(decodeBase64Url(v.encoded))).toEqual(v.bytes);
+      if (v.error === true) continue;
+      expect(toHex(decodeBase64Url(v.encoded))).toBe(v.decodedHex ?? "");
     }
+  });
+
+  it("rejects every spelling the reference rejects", () => {
+    // A decoder that accepts more spellings than the peer does gives one
+    // payload a second encoded form, and the encoded form is what this
+    // protocol compares and hashes.
+    const accepted = vectors
+      .filter((v) => v.error === true)
+      .filter((v) => {
+        try {
+          decodeBase64Url(v.encoded);
+          return true;
+        } catch {
+          return false;
+        }
+      })
+      .map((v) => v.name);
+
+    expect(accepted).toEqual([]);
   });
 
   it("never emits padding", () => {
     for (const v of vectors) {
-      expect(encodeBase64Url(Uint8Array.from(v.bytes))).not.toContain("=");
+      if (v.error === true) continue;
+      expect(encodeBase64Url(bytesOf(v))).not.toContain("=");
     }
   });
 });
@@ -61,6 +100,19 @@ describe("base64url decoding rejects ambiguous input", () => {
   it("accepts padding, since a padding peer must still be understood", () => {
     expect(decodeBase64UrlText("aGVsbG8=")).toBe("hello");
     expect(decodeBase64UrlText("aGVsbG8")).toBe("hello");
+  });
+
+  it("accepts padding only where RFC 4648 would have put it", () => {
+    // Stripping whatever trailing "=" happens to be present would let a
+    // payload be spelled several ways, which is the same malleability the
+    // trailing-bits check exists to close. Padding has to bring the input
+    // to a multiple of four, and there is never more than two characters
+    // of it.
+    expect(() => decodeBase64Url("aGVsbG8===")).toThrow(/padding characters/);
+    expect(() => decodeBase64Url("aGVsbG=")).toThrow(/multiple of 4/);
+    expect(() => decodeBase64Url("aGV=bG8")).toThrow(
+      /invalid base64url character/,
+    );
   });
 
   it("rejects the standard base64 alphabet", () => {
