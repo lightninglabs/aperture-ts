@@ -41,6 +41,7 @@ import {
   SessionManager,
   type CloseOutcome,
   type ReturnInvoiceMinter,
+  type SessionRequestSender,
 } from "../mpp/sessionManager.js";
 import {
   attachAuthorization,
@@ -132,8 +133,16 @@ export interface PayingFetch {
   /** The session state machine, for callers that manage sessions directly. */
   sessions: SessionManager;
 
-  /** Close every open session and collect the refunds. */
-  closeSessions(): Promise<CloseOutcome[]>;
+  /**
+   * Close every open session and collect the refunds.
+   *
+   * The default sender issues a bodyless GET to the URL each session was
+   * opened against, carrying the close credential. Which request a server
+   * expects a close on is the least settled part of the session draft, so
+   * `send` is here as the escape hatch: pass one if the seller wants
+   * something else.
+   */
+  closeSessions(send?: SessionRequestSender): Promise<CloseOutcome[]>;
 }
 
 /**
@@ -299,14 +308,18 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
   } as PayingFetch;
 
   payingFetch.sessions = sessions;
-  payingFetch.closeSessions = async (): Promise<CloseOutcome[]> =>
-    sessions.closeAll(async ({ url: closeUrl, authorization }) =>
-      fetch(
-        new Request(closeUrl, {
-          method: "GET",
-          headers: { Authorization: authorization },
-        }),
-      ),
+  payingFetch.closeSessions = async (
+    send?: SessionRequestSender,
+  ): Promise<CloseOutcome[]> =>
+    sessions.closeAll(
+      send ??
+        (async ({ url: closeUrl, authorization }) =>
+          fetch(
+            new Request(closeUrl, {
+              method: "GET",
+              headers: { Authorization: authorization },
+            }),
+          )),
     );
 
   return payingFetch;

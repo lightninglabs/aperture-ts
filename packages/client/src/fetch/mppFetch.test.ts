@@ -930,6 +930,40 @@ describe("closing sessions", () => {
     expect(await client.sessions.listOpen()).toEqual([]);
   });
 
+  it("lets the caller supply the close request", async () => {
+    // Which request a server expects a close on is the least settled part
+    // of the session draft, so a seller that wants something other than a
+    // bodyless GET has somewhere to say so.
+    stubFetch(async (_sent, index) =>
+      index === 0
+        ? challengeResponse([
+            await sessionChallenge({
+              depositSat: 300,
+              pricePerUnitSat: 2,
+              label: "deposit",
+            }),
+          ])
+        : new Response("ok", { status: 200 }),
+    );
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+    await client(URL_UNDER_TEST);
+
+    const sent: string[] = [];
+    const outcomes = await client.closeSessions(async ({ url, authorization }) => {
+      sent.push(`${url} ${authorization.slice(0, 8)}`);
+      return receiptResponse({
+        reference: await hashFor("deposit"),
+        refundSats: 298,
+        refundStatus: "succeeded",
+      });
+    });
+
+    expect(sent).toEqual([`${URL_UNDER_TEST} Payment `]);
+    expect(outcomes[0]?.refundSats).toBe(298);
+  });
+
   it("reports a refund the server skipped", async () => {
     stubFetch(async (sent, index) => {
       if (index === 0) {
