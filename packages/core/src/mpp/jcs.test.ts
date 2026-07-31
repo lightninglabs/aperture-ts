@@ -183,10 +183,17 @@ describe("canonicalize properties", () => {
     }
   });
 
-  it("emits object keys in non-decreasing code point order", () => {
+  it("emits object keys in code point order", () => {
     for (let seed = 0; seed < ITERATIONS; seed++) {
-      const value = randomJson(makeRng(seed), 3);
-      assertKeysSorted(JSON.parse(canonicalize(value)));
+      const canonical = canonicalize(randomJson(makeRng(seed), 3));
+
+      for (const keys of objectKeyOrders(canonical)) {
+        for (let i = 1; i < keys.length; i++) {
+          expect(
+            compareCodePoints(keys[i - 1] as string, keys[i] as string),
+          ).toBeLessThan(0);
+        }
+      }
     }
   });
 
@@ -293,18 +300,97 @@ function shuffleKeys(value: Json, rng: () => number): Json {
   return out;
 }
 
-function assertKeysSorted(value: unknown): void {
-  if (Array.isArray(value)) {
-    value.forEach(assertKeysSorted);
-    return;
-  }
-  if (value === null || typeof value !== "object") return;
+/**
+ * Recover each object's key order from canonical JSON text.
+ *
+ * The order has to be read out of the bytes rather than out of
+ * `JSON.parse`, because a JavaScript object does not preserve the order of
+ * keys that look like array indices: parsing `{"9":1,"a":2,"1":3}` yields
+ * `1`, `9`, `a`. That is a property of the language's objects, not of the
+ * canonicalizer, and checking through it would report a bug that is not
+ * there while hiding one that is.
+ */
+function objectKeyOrders(text: string): string[][] {
+  const orders: string[][] = [];
+  let at = 0;
 
-  const keys = Object.keys(value);
-  for (let i = 1; i < keys.length; i++) {
-    expect(
-      compareCodePoints(keys[i - 1] as string, keys[i] as string),
-    ).toBeLessThan(0);
+  function parseString(): string {
+    at++; // Opening quote.
+    let out = "";
+
+    while (at < text.length) {
+      const char = text[at] as string;
+
+      if (char === "\\") {
+        const escape = text[at + 1] as string;
+        if (escape === "u") {
+          out += String.fromCharCode(
+            Number.parseInt(text.slice(at + 2, at + 6), 16),
+          );
+          at += 6;
+        } else {
+          out += UNESCAPE[escape] ?? escape;
+          at += 2;
+        }
+        continue;
+      }
+
+      at++;
+      if (char === '"') return out;
+      out += char;
+    }
+
+    throw new Error("unterminated string in canonical output");
   }
-  Object.values(value).forEach(assertKeysSorted);
+
+  function parseValue(): void {
+    const char = text[at] as string;
+
+    if (char === "{") {
+      at++;
+      const keys: string[] = [];
+      orders.push(keys);
+
+      while (text[at] !== "}") {
+        keys.push(parseString());
+        at++; // Colon.
+        parseValue();
+        if (text[at] === ",") at++;
+      }
+      at++;
+      return;
+    }
+
+    if (char === "[") {
+      at++;
+      while (text[at] !== "]") {
+        parseValue();
+        if (text[at] === ",") at++;
+      }
+      at++;
+      return;
+    }
+
+    if (char === '"') {
+      parseString();
+      return;
+    }
+
+    // A literal: number, true, false, or null.
+    while (at < text.length && !",}]".includes(text[at] as string)) at++;
+  }
+
+  parseValue();
+  return orders;
 }
+
+const UNESCAPE: Record<string, string> = {
+  n: "\n",
+  r: "\r",
+  t: "\t",
+  b: "\b",
+  f: "\f",
+  '"': '"',
+  "\\": "\\",
+  "/": "/",
+};
