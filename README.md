@@ -413,7 +413,8 @@ aperture-ts/
 ├── examples/
 │   ├── worker-rest-paid-api/  # Paid REST API example
 │   ├── worker-mcp-paid-tool/  # Paid MCP server example
-│   └── buyer-client.ts        # Buyer SDK usage example
+│   ├── buyer-client.ts        # Buyer SDK usage example (L402)
+│   └── mpp-session-client.ts  # Buyer SDK usage example (Payment sessions)
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json
 └── package.json
