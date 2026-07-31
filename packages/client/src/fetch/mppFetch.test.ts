@@ -704,6 +704,117 @@ describe("session intent", () => {
   });
 });
 
+describe("the one-payment-per-call bound", () => {
+  it("does not pay a second time when the topped-up retry is refused", async () => {
+    // The retry after a payment is the last thing this call does. A client
+    // that pays again when that retry is refused has built a loop with a
+    // wallet attached to it.
+    stubFetch(async (_sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ]);
+      }
+      if (index === 1) return new Response("ok", { status: 200 });
+
+      // Every request from here on is refused for insufficient balance,
+      // top-up challenge included.
+      return challengeResponse(
+        [
+          await sessionChallenge({
+            depositSat: 500,
+            pricePerUnitSat: 2,
+            label: "topup",
+          }),
+        ],
+        { type: PROBLEM_LIGHTNING_INSUFFICIENT_BALANCE },
+      );
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+    await payer.expectLabel(500, "topup");
+
+    await client(URL_UNDER_TEST);
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(402);
+    expect(payer.paid).toEqual([
+      invoiceFor(300, "deposit"),
+      invoiceFor(500, "topup"),
+    ]);
+  });
+
+  it("does not pay a second time when the opened retry is refused", async () => {
+    stubFetch(async () =>
+      challengeResponse([
+        await sessionChallenge({
+          depositSat: 300,
+          pricePerUnitSat: 2,
+          label: "deposit",
+        }),
+      ]),
+    );
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(402);
+    expect(payer.paid).toHaveLength(1);
+  });
+
+  it("does not spend on a request the caller has abandoned", async () => {
+    // The wallet must not pay for a response nobody is waiting for. The
+    // abort is checked again after the policy resolves, since the caller
+    // may have given up while it was deciding.
+    const controller = new AbortController();
+
+    stubFetch(async () => {
+      controller.abort();
+      return challengeResponse([
+        await chargeChallenge({ amountSat: 100, label: "charge" }),
+      ]);
+    });
+
+    const { client, payer } = newClient({ intents: ["charge"] });
+    await payer.expectLabel(100, "charge");
+
+    await expect(
+      client(URL_UNDER_TEST, { signal: controller.signal }),
+    ).rejects.toThrow(/aborted/i);
+    expect(payer.paid).toEqual([]);
+  });
+
+  it("does not spend on an abandoned request under a session", async () => {
+    const controller = new AbortController();
+
+    stubFetch(async () => {
+      controller.abort();
+      return challengeResponse([
+        await sessionChallenge({
+          depositSat: 300,
+          pricePerUnitSat: 2,
+          label: "deposit",
+        }),
+      ]);
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    await expect(
+      client(URL_UNDER_TEST, { signal: controller.signal }),
+    ).rejects.toThrow(/aborted/i);
+    expect(payer.paid).toEqual([]);
+  });
+});
+
 describe("concurrent requests against one session", () => {
   it("opens one session and pays one deposit", async () => {
     const { calls } = stubFetch(async (sent, index) => {
