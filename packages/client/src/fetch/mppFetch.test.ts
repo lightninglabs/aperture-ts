@@ -895,6 +895,42 @@ describe("credential precedence", () => {
     );
   });
 
+  it("drops a cached credential the server refused", async () => {
+    // A credential the server refused is spent or bound to a challenge that
+    // is gone. Keeping it would cost a wasted round trip on every later
+    // request to this route, and a credential with no expiry has nothing to
+    // age it out.
+    const credentialCache = new CredentialCache();
+    const key = CredentialCache.cacheKey(
+      "https://api.example.com",
+      "/infer",
+      "GET",
+    );
+    credentialCache.put(key, {
+      authorization: "Payment c3RhbGU",
+      challengeId: "ch_stale",
+    });
+
+    stubFetch(async (sent) =>
+      sent.authorization === "Payment c3RhbGU"
+        ? challengeResponse([
+            await chargeChallenge({ amountSat: 100, label: "charge" }),
+          ])
+        : new Response("ok", { status: 200 }),
+    );
+
+    const { client, payer } = newClient({ credentialCache, intents: ["charge"] });
+    await payer.expectLabel(100, "charge");
+
+    await client(URL_UNDER_TEST);
+
+    // The stale entry is gone, replaced by the credential just paid for.
+    expect(credentialCache.get(key)?.authorization).not.toBe(
+      "Payment c3RhbGU",
+    );
+    expect(payer.paid).toEqual([invoiceFor(100, "charge")]);
+  });
+
   it("does not attribute a refused cached credential to the session", async () => {
     // The session exists but was not the credential the server refused, so
     // a session-not-found problem in that 402 is about something else and

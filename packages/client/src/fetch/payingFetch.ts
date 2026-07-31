@@ -240,6 +240,15 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
       return firstResponse;
     }
 
+    // A cached credential the server just refused is spent, or bound to a
+    // challenge that is gone. Dropping it costs nothing, and keeping it
+    // would spend a wasted round trip on every later request to this route,
+    // since a credential the server never gave an expiry for has nothing to
+    // age it out.
+    if (attached.fromCredentialCache) {
+      await credentialCache.delete(cacheKey);
+    }
+
     // Step 3: Dispatch on the scheme the server offered. This reads only
     // headers, because a 402 body can be read once and whoever handles the
     // challenge is the one who needs it.
@@ -314,6 +323,9 @@ interface AttachedCredential {
    * reads this rather than merely whether a session exists.
    */
   session: SessionRecord | null;
+
+  /** Whether the credential came out of the paid-credential cache. */
+  fromCredentialCache: boolean;
 }
 
 /**
@@ -344,6 +356,7 @@ async function attachExistingCredential(input: {
         input.bodyBytes,
       ),
       session: null,
+      fromCredentialCache: true,
     };
   }
 
@@ -357,6 +370,7 @@ async function attachExistingCredential(input: {
         input.bodyBytes,
       ),
       session: null,
+      fromCredentialCache: false,
     };
   }
 
@@ -370,10 +384,11 @@ async function attachExistingCredential(input: {
         input.bodyBytes,
       ),
       session,
+      fromCredentialCache: false,
     };
   }
 
-  return { request: input.request, session: null };
+  return { request: input.request, session: null, fromCredentialCache: false };
 }
 
 /**
