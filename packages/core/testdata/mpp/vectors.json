@@ -1,0 +1,491 @@
+{
+  "jcs": [
+    {
+      "name": "empty object",
+      "input": "{}",
+      "canonical": "{}",
+      "encoded": "e30"
+    },
+    {
+      "name": "empty array",
+      "input": "[]",
+      "canonical": "[]",
+      "encoded": "W10"
+    },
+    {
+      "name": "reorder keys",
+      "input": "{\"z\":\"last\",\"a\":\"first\",\"m\":\"middle\"}",
+      "canonical": "{\"a\":\"first\",\"m\":\"middle\",\"z\":\"last\"}",
+      "encoded": "eyJhIjoiZmlyc3QiLCJtIjoibWlkZGxlIiwieiI6Imxhc3QifQ"
+    },
+    {
+      "name": "strip whitespace",
+      "input": "{ \"b\" : \"2\" , \"a\" : \"1\" }",
+      "canonical": "{\"a\":\"1\",\"b\":\"2\"}",
+      "encoded": "eyJhIjoiMSIsImIiOiIyIn0"
+    },
+    {
+      "name": "mixed case keys",
+      "input": "{\"b\":\"2\",\"A\":\"1\",\"a\":\"3\"}",
+      "canonical": "{\"A\":\"1\",\"a\":\"3\",\"b\":\"2\"}",
+      "encoded": "eyJBIjoiMSIsImEiOiIzIiwiYiI6IjIifQ"
+    },
+    {
+      "name": "numeric string keys",
+      "input": "{\"10\":\"ten\",\"2\":\"two\",\"1\":\"one\"}",
+      "canonical": "{\"1\":\"one\",\"10\":\"ten\",\"2\":\"two\"}",
+      "encoded": "eyIxIjoib25lIiwiMTAiOiJ0ZW4iLCIyIjoidHdvIn0"
+    },
+    {
+      "name": "nested reorder",
+      "input": "{\"outer\":{\"z\":\"1\",\"a\":\"2\"}}",
+      "canonical": "{\"outer\":{\"a\":\"2\",\"z\":\"1\"}}",
+      "encoded": "eyJvdXRlciI6eyJhIjoiMiIsInoiOiIxIn19"
+    },
+    {
+      "name": "deeply nested",
+      "input": "{\"a\":{\"b\":{\"c\":\"deep\"}}}",
+      "canonical": "{\"a\":{\"b\":{\"c\":\"deep\"}}}",
+      "encoded": "eyJhIjp7ImIiOnsiYyI6ImRlZXAifX19"
+    },
+    {
+      "name": "array preserves order",
+      "input": "{\"items\":[\"c\",\"a\",\"b\"]}",
+      "canonical": "{\"items\":[\"c\",\"a\",\"b\"]}",
+      "encoded": "eyJpdGVtcyI6WyJjIiwiYSIsImIiXX0"
+    },
+    {
+      "name": "array of objects",
+      "input": "{\"list\":[{\"z\":\"1\",\"a\":\"2\"}]}",
+      "canonical": "{\"list\":[{\"a\":\"2\",\"z\":\"1\"}]}",
+      "encoded": "eyJsaXN0IjpbeyJhIjoiMiIsInoiOiIxIn1dfQ"
+    },
+    {
+      "name": "null and booleans",
+      "input": "{\"n\":null,\"t\":true,\"f\":false}",
+      "canonical": "{\"f\":false,\"n\":null,\"t\":true}",
+      "encoded": "eyJmIjpmYWxzZSwibiI6bnVsbCwidCI6dHJ1ZX0"
+    },
+    {
+      "name": "string escapes",
+      "input": "{\"s\":\"hello\\nworld\\t\\\"quoted\\\"\\\\slash\"}",
+      "canonical": "{\"s\":\"hello\\nworld\\t\\\"quoted\\\"\\\\slash\"}",
+      "encoded": "eyJzIjoiaGVsbG9cbndvcmxkXHRcInF1b3RlZFwiXFxzbGFzaCJ9"
+    },
+    {
+      "name": "unicode string",
+      "input": "{\"s\":\"café\"}",
+      "canonical": "{\"s\":\"café\"}",
+      "encoded": "eyJzIjoiY2Fmw6kifQ"
+    },
+    {
+      "name": "unicode keys",
+      "input": "{\"é\":\"1\",\"e\":\"2\",\"z\":\"3\"}",
+      "canonical": "{\"e\":\"2\",\"z\":\"3\",\"é\":\"1\"}",
+      "encoded": "eyJlIjoiMiIsInoiOiIzIiwiw6kiOiIxIn0"
+    },
+    {
+      "name": "control characters",
+      "input": "{\"s\":\"\\u0000\\u001f\\u007f\"}",
+      "canonical": "{\"s\":\"\\u0000\\u001f\"}",
+      "encoded": "eyJzIjoiXHUwMDAwXHUwMDFmfyJ9"
+    },
+    {
+      "name": "forward slash and ampersand",
+      "input": "{\"s\":\"a/b\u0026c\u003cd\u003ee\"}",
+      "canonical": "{\"s\":\"a/b\\u0026c\\u003cd\\u003ee\"}",
+      "encoded": "eyJzIjoiYS9iXHUwMDI2Y1x1MDAzY2RcdTAwM2VlIn0"
+    },
+    {
+      "name": "astral key ordering",
+      "input": "{\"\\ud83d\\ude00\":\"emoji\",\"\\ufffd\":\"replacement\",\"a\":\"ascii\"}",
+      "canonical": "{\"a\":\"ascii\",\"�\":\"replacement\",\"😀\":\"emoji\"}",
+      "encoded": "eyJhIjoiYXNjaWkiLCLvv70iOiJyZXBsYWNlbWVudCIsIvCfmIAiOiJlbW9qaSJ9"
+    },
+    {
+      "name": "non integer numbers",
+      "input": "{\"a\":1.5,\"b\":-0.25,\"c\":100.0}",
+      "canonical": "{\"a\":1.5,\"b\":-0.25,\"c\":100}",
+      "encoded": "eyJhIjoxLjUsImIiOi0wLjI1LCJjIjoxMDB9"
+    },
+    {
+      "name": "line separators",
+      "input": "{\"s\":\"a\\u2028b\\u2029c\"}",
+      "canonical": "{\"s\":\"a\\u2028b\\u2029c\"}",
+      "encoded": "eyJzIjoiYVx1MjAyOGJcdTIwMjljIn0"
+    },
+    {
+      "name": "del and high control",
+      "input": "{\"s\":\"\\u001b\\u009f\"}",
+      "canonical": "{\"s\":\"\\u001b\"}",
+      "encoded": "eyJzIjoiXHUwMDFiwp8ifQ"
+    },
+    {
+      "name": "empty key and empty string",
+      "input": "{\"\":\"\"}",
+      "canonical": "{\"\":\"\"}",
+      "encoded": "eyIiOiIifQ"
+    },
+    {
+      "name": "integers",
+      "input": "{\"a\":0,\"b\":-1,\"c\":42,\"d\":1000000}",
+      "canonical": "{\"a\":0,\"b\":-1,\"c\":42,\"d\":1000000}",
+      "encoded": "eyJhIjowLCJiIjotMSwiYyI6NDIsImQiOjEwMDAwMDB9"
+    },
+    {
+      "name": "large safe integer",
+      "input": "{\"a\":9007199254740991}",
+      "canonical": "{\"a\":9007199254740991}",
+      "encoded": "eyJhIjo5MDA3MTk5MjU0NzQwOTkxfQ"
+    },
+    {
+      "name": "charge request",
+      "input": "{\"amount\":\"100\",\"currency\":\"sat\",\"description\":\"Weather report\",\"methodDetails\":{\"invoice\":\"lnbc1u1p...\",\"paymentHash\":\"bc230847...\",\"network\":\"mainnet\"}}",
+      "canonical": "{\"amount\":\"100\",\"currency\":\"sat\",\"description\":\"Weather report\",\"methodDetails\":{\"invoice\":\"lnbc1u1p...\",\"network\":\"mainnet\",\"paymentHash\":\"bc230847...\"}}",
+      "encoded": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCIsImRlc2NyaXB0aW9uIjoiV2VhdGhlciByZXBvcnQiLCJtZXRob2REZXRhaWxzIjp7Imludm9pY2UiOiJsbmJjMXUxcC4uLiIsIm5ldHdvcmsiOiJtYWlubmV0IiwicGF5bWVudEhhc2giOiJiYzIzMDg0Ny4uLiJ9fQ"
+    },
+    {
+      "name": "session request",
+      "input": "{\"amount\":\"2\",\"currency\":\"sat\",\"description\":\"LLM token stream\",\"unitType\":\"token\",\"depositInvoice\":\"lnbcrt1p5mzfsa...\",\"paymentHash\":\"7f3a1b2c4d5e6f\",\"depositAmount\":\"300\",\"idleTimeout\":\"300\"}",
+      "canonical": "{\"amount\":\"2\",\"currency\":\"sat\",\"depositAmount\":\"300\",\"depositInvoice\":\"lnbcrt1p5mzfsa...\",\"description\":\"LLM token stream\",\"idleTimeout\":\"300\",\"paymentHash\":\"7f3a1b2c4d5e6f\",\"unitType\":\"token\"}",
+      "encoded": "eyJhbW91bnQiOiIyIiwiY3VycmVuY3kiOiJzYXQiLCJkZXBvc2l0QW1vdW50IjoiMzAwIiwiZGVwb3NpdEludm9pY2UiOiJsbmJjcnQxcDVtemZzYS4uLiIsImRlc2NyaXB0aW9uIjoiTExNIHRva2VuIHN0cmVhbSIsImlkbGVUaW1lb3V0IjoiMzAwIiwicGF5bWVudEhhc2giOiI3ZjNhMWIyYzRkNWU2ZiIsInVuaXRUeXBlIjoidG9rZW4ifQ"
+    },
+    {
+      "name": "already canonical",
+      "input": "{\"a\":\"1\",\"b\":\"2\"}",
+      "canonical": "{\"a\":\"1\",\"b\":\"2\"}",
+      "encoded": "eyJhIjoiMSIsImIiOiIyIn0"
+    },
+    {
+      "name": "top level string",
+      "input": "\"hello\"",
+      "canonical": "\"hello\"",
+      "encoded": "ImhlbGxvIg"
+    },
+    {
+      "name": "top level number",
+      "input": "42",
+      "canonical": "42",
+      "encoded": "NDI"
+    },
+    {
+      "name": "top level null",
+      "input": "null",
+      "canonical": "null",
+      "encoded": "bnVsbA"
+    },
+    {
+      "name": "top level true",
+      "input": "true",
+      "canonical": "true",
+      "encoded": "dHJ1ZQ"
+    },
+    {
+      "name": "nested empty containers",
+      "input": "{\"a\":{},\"b\":[],\"c\":[{}]}",
+      "canonical": "{\"a\":{},\"b\":[],\"c\":[{}]}",
+      "encoded": "eyJhIjp7fSwiYiI6W10sImMiOlt7fV19"
+    }
+  ],
+  "base64url": [
+    {
+      "name": "empty",
+      "bytes": [],
+      "encoded": ""
+    },
+    {
+      "name": "simple",
+      "bytes": [
+        104,
+        101,
+        108,
+        108,
+        111
+      ],
+      "encoded": "aGVsbG8"
+    },
+    {
+      "name": "url unsafe",
+      "bytes": [
+        255,
+        254,
+        253
+      ],
+      "encoded": "__79"
+    },
+    {
+      "name": "one byte",
+      "bytes": [
+        0
+      ],
+      "encoded": "AA"
+    },
+    {
+      "name": "two bytes",
+      "bytes": [
+        1,
+        2
+      ],
+      "encoded": "AQI"
+    },
+    {
+      "name": "three bytes",
+      "bytes": [
+        1,
+        2,
+        3
+      ],
+      "encoded": "AQID"
+    },
+    {
+      "name": "json object",
+      "bytes": [
+        123,
+        34,
+        97,
+        109,
+        111,
+        117,
+        110,
+        116,
+        34,
+        58,
+        34,
+        49,
+        48,
+        48,
+        34,
+        44,
+        34,
+        99,
+        117,
+        114,
+        114,
+        101,
+        110,
+        99,
+        121,
+        34,
+        58,
+        34,
+        115,
+        97,
+        116,
+        34,
+        125
+      ],
+      "encoded": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9"
+    },
+    {
+      "name": "high bytes",
+      "bytes": [
+        251,
+        255,
+        191,
+        62,
+        63
+      ],
+      "encoded": "-_-_Pj8"
+    }
+  ],
+  "challengeId": [
+    {
+      "name": "required only",
+      "secret": "test-server-secret-key-32-bytes!",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "",
+      "digest": "",
+      "opaque": "",
+      "hmacInput": "api.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|||",
+      "id": "pb-rRFI_4fNN0b1BiTg4pT4jYATn9MAhUWoFigarzJE"
+    },
+    {
+      "name": "expires only",
+      "secret": "test-server-secret-key-32-bytes!",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "2026-03-15T12:05:00Z",
+      "digest": "",
+      "opaque": "",
+      "hmacInput": "api.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|2026-03-15T12:05:00Z||",
+      "id": "fUaqOvH6n5FgvVKhup6aKkfSKKDoQHPXIhrDDnudNgk"
+    },
+    {
+      "name": "digest only",
+      "secret": "test-server-secret-key-32-bytes!",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "",
+      "digest": "sha-256=:abc:",
+      "opaque": "",
+      "hmacInput": "api.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9||sha-256=:abc:|",
+      "id": "wglqFXQ57qCpkKbb-GbyUzMNrbk4ZW2hvpIDpT3B_xk"
+    },
+    {
+      "name": "opaque only",
+      "secret": "test-server-secret-key-32-bytes!",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "",
+      "digest": "",
+      "opaque": "eyJvcmRlciI6IjEyMyJ9",
+      "hmacInput": "api.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|||eyJvcmRlciI6IjEyMyJ9",
+      "id": "W9CGlC0KYHmffEjFJFstjbf2gm_ThLYRbHWu1K2MV5E"
+    },
+    {
+      "name": "all optional",
+      "secret": "test-server-secret-key-32-bytes!",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "2026-03-15T12:05:00Z",
+      "digest": "sha-256=:abc:",
+      "opaque": "eyJvcmRlciI6IjEyMyJ9",
+      "hmacInput": "api.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|2026-03-15T12:05:00Z|sha-256=:abc:|eyJvcmRlciI6IjEyMyJ9",
+      "id": "Cl2X9Mzo8mDkanwLcE6sqLDrCOvQJFYWGCy_EK5msWI"
+    },
+    {
+      "name": "session intent",
+      "secret": "test-server-secret-key-32-bytes!",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "session",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "2026-03-15T12:05:00Z",
+      "digest": "",
+      "opaque": "",
+      "hmacInput": "api.example.com|lightning|session|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|2026-03-15T12:05:00Z||",
+      "id": "ndguUIuhIiFY2seICmXyGQXrg_qzEo5fackG3qrrQWc"
+    },
+    {
+      "name": "unicode realm",
+      "secret": "test-server-secret-key-32-bytes!",
+      "realm": "café.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "",
+      "digest": "",
+      "opaque": "",
+      "hmacInput": "café.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|||",
+      "id": "DamrRxVLh493-n7C6JzwmdZ6CNt9xXGb3FGJwyxSJz8"
+    },
+    {
+      "name": "long secret",
+      "secret": "a-much-longer-server-secret-that-exceeds-the-sha256-block-size-of-sixty-four-bytes-so-the-hmac-key-is-hashed-first",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "",
+      "digest": "",
+      "opaque": "",
+      "hmacInput": "api.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|||",
+      "id": "pbf6OBHV_4Ngv-5K1sQP9y2apfBTs6kaoTwdxP04Pqg"
+    },
+    {
+      "name": "empty secret",
+      "secret": "",
+      "realm": "api.example.com",
+      "method": "lightning",
+      "intent": "charge",
+      "request": "eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9",
+      "expires": "",
+      "digest": "",
+      "opaque": "",
+      "hmacInput": "api.example.com|lightning|charge|eyJhbW91bnQiOiIxMDAiLCJjdXJyZW5jeSI6InNhdCJ9|||",
+      "id": "_j-bXfp6zIh_TmQO2vbd8-n-ujJlYt8db-UhNUGCY8Y"
+    }
+  ],
+  "challengeHeaders": [
+    {
+      "name": "minimal",
+      "params": {
+        "ID": "minimalid",
+        "Realm": "example.com",
+        "Method": "lightning",
+        "Intent": "charge",
+        "Request": "eyJ0ZXN0IjoiMSJ9",
+        "Expires": "",
+        "Digest": "",
+        "Description": "",
+        "Opaque": ""
+      },
+      "header": "Payment id=\"minimalid\", realm=\"example.com\", method=\"lightning\", intent=\"charge\", request=\"eyJ0ZXN0IjoiMSJ9\""
+    },
+    {
+      "name": "all params",
+      "params": {
+        "ID": "x7Tg2pLqR9mKvNwY3hBcZa",
+        "Realm": "api.example.com",
+        "Method": "lightning",
+        "Intent": "session",
+        "Request": "eyJ0ZXN0IjoidmFsdWUifQ",
+        "Expires": "2026-03-15T12:05:00Z",
+        "Digest": "sha-256=:X48E9q:",
+        "Description": "Test payment",
+        "Opaque": "eyJvcmRlcklkIjoiMTIzIn0"
+      },
+      "header": "Payment id=\"x7Tg2pLqR9mKvNwY3hBcZa\", realm=\"api.example.com\", method=\"lightning\", intent=\"session\", request=\"eyJ0ZXN0IjoidmFsdWUifQ\", expires=\"2026-03-15T12:05:00Z\", digest=\"sha-256=:X48E9q:\", description=\"Test payment\", opaque=\"eyJvcmRlcklkIjoiMTIzIn0\""
+    },
+    {
+      "name": "description with spaces and comma",
+      "params": {
+        "ID": "descid",
+        "Realm": "api.example.com",
+        "Method": "lightning",
+        "Intent": "charge",
+        "Request": "eyJ0ZXN0IjoiMSJ9",
+        "Expires": "",
+        "Digest": "",
+        "Description": "Weather report, hourly",
+        "Opaque": ""
+      },
+      "header": "Payment id=\"descid\", realm=\"api.example.com\", method=\"lightning\", intent=\"charge\", request=\"eyJ0ZXN0IjoiMSJ9\", description=\"Weather report, hourly\""
+    }
+  ],
+  "credentials": [
+    {
+      "name": "charge",
+      "header": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJrTTl4UHFXdlQybkpySHNZNGFEZkViIiwicmVhbG0iOiJhcGkuZXhhbXBsZS5jb20iLCJtZXRob2QiOiJsaWdodG5pbmciLCJpbnRlbnQiOiJjaGFyZ2UiLCJyZXF1ZXN0IjoiZXlKaGJXOTFiblFpT2lJeE1EQWlmUSIsImV4cGlyZXMiOiIyMDI2LTAzLTE1VDEyOjA1OjAwWiJ9LCJwYXlsb2FkIjp7InByZWltYWdlIjoiYTNmMWUyZDRiNWM2YTdlOCJ9fQ",
+      "json": "{\"challenge\":{\"id\":\"kM9xPqWvT2nJrHsY4aDfEb\",\"realm\":\"api.example.com\",\"method\":\"lightning\",\"intent\":\"charge\",\"request\":\"eyJhbW91bnQiOiIxMDAifQ\",\"expires\":\"2026-03-15T12:05:00Z\"},\"payload\":{\"preimage\":\"a3f1e2d4b5c6a7e8\"}}"
+    },
+    {
+      "name": "session bearer",
+      "header": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJwUjRtTnZLcVU4d0xzWXRaMWJDZEZnIiwicmVhbG0iOiJhcGkuZXhhbXBsZS5jb20iLCJtZXRob2QiOiJsaWdodG5pbmciLCJpbnRlbnQiOiJzZXNzaW9uIiwicmVxdWVzdCI6ImV5SmhiVzkxYm5RaU9pSXlJbjAifSwicGF5bG9hZCI6eyJhY3Rpb24iOiJiZWFyZXIiLCJzZXNzaW9uSWQiOiI3ZjNhMWIyYzRkNWU2ZiJ9fQ",
+      "json": "{\"challenge\":{\"id\":\"pR4mNvKqU8wLsYtZ1bCdFg\",\"realm\":\"api.example.com\",\"method\":\"lightning\",\"intent\":\"session\",\"request\":\"eyJhbW91bnQiOiIyIn0\"},\"payload\":{\"action\":\"bearer\",\"sessionId\":\"7f3a1b2c4d5e6f\"}}"
+    },
+    {
+      "name": "with source",
+      "header": "Payment eyJjaGFsbGVuZ2UiOnsiaWQiOiJzcmNpZCIsInJlYWxtIjoiZXhhbXBsZS5jb20iLCJtZXRob2QiOiJsaWdodG5pbmciLCJpbnRlbnQiOiJjaGFyZ2UiLCJyZXF1ZXN0IjoiZXlKMFpYTjBJam9pTVNKOSJ9LCJzb3VyY2UiOiJkaWQ6a2V5Ono2TWtoYVhnQlpEdm90RGtMNTI1N2ZhaXp0aUciLCJwYXlsb2FkIjp7InByZWltYWdlIjoiZGVhZGJlZWYifX0",
+      "json": "{\"challenge\":{\"id\":\"srcid\",\"realm\":\"example.com\",\"method\":\"lightning\",\"intent\":\"charge\",\"request\":\"eyJ0ZXN0IjoiMSJ9\"},\"source\":\"did:key:z6MkhaXgBZDvotDkL5257faiztiG\",\"payload\":{\"preimage\":\"deadbeef\"}}"
+    }
+  ],
+  "receipts": [
+    {
+      "name": "charge",
+      "header": "eyJzdGF0dXMiOiJzdWNjZXNzIiwibWV0aG9kIjoibGlnaHRuaW5nIiwidGltZXN0YW1wIjoiMjAyNi0wMy0xMFQyMTowMDowMFoiLCJyZWZlcmVuY2UiOiJiYzIzMDg0N2FiY2RlZjEyMzQ1Njc4OTAiLCJjaGFsbGVuZ2VJZCI6ImtNOXhQcVd2VDJuSnJIc1k0YURmRWIifQ",
+      "json": "{\"status\":\"success\",\"method\":\"lightning\",\"timestamp\":\"2026-03-10T21:00:00Z\",\"reference\":\"bc230847abcdef1234567890\",\"challengeId\":\"kM9xPqWvT2nJrHsY4aDfEb\"}"
+    },
+    {
+      "name": "session close refunded",
+      "header": "eyJtZXRob2QiOiJsaWdodG5pbmciLCJyZWZlcmVuY2UiOiI3ZjNhMWIyYzRkNWU2ZiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJ0aW1lc3RhbXAiOiIyMDI2LTAzLTEwVDIxOjAwOjAwWiIsInJlZnVuZFNhdHMiOjE0MCwicmVmdW5kU3RhdHVzIjoic3VjY2VlZGVkIn0",
+      "json": "{\"method\":\"lightning\",\"reference\":\"7f3a1b2c4d5e6f\",\"status\":\"success\",\"timestamp\":\"2026-03-10T21:00:00Z\",\"refundSats\":140,\"refundStatus\":\"succeeded\"}"
+    },
+    {
+      "name": "session close skipped",
+      "header": "eyJtZXRob2QiOiJsaWdodG5pbmciLCJyZWZlcmVuY2UiOiI3ZjNhMWIyYzRkNWU2ZiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJ0aW1lc3RhbXAiOiIyMDI2LTAzLTEwVDIxOjAwOjAwWiIsInJlZnVuZFN0YXR1cyI6InNraXBwZWQifQ",
+      "json": "{\"method\":\"lightning\",\"reference\":\"7f3a1b2c4d5e6f\",\"status\":\"success\",\"timestamp\":\"2026-03-10T21:00:00Z\",\"refundStatus\":\"skipped\"}"
+    }
+  ]
+}
