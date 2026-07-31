@@ -392,13 +392,29 @@ export class SessionManager {
     return work;
   }
 
-  /** Close every session this manager still holds, refunds and all. */
+  /**
+   * Close every session this manager still holds, refunds and all.
+   *
+   * One session that will not close does not stop the others. This runs on
+   * the way out, where a network error against one seller should not cost
+   * the refunds owed by every other seller, and a session that failed to
+   * close is still in `listOpen` afterwards for a caller that wants to
+   * retry or report it.
+   */
   async closeAll(send: SessionRequestSender): Promise<CloseOutcome[]> {
     const outcomes: CloseOutcome[] = [];
 
     for (const record of await this.listOpen()) {
-      const outcome = await this.close(record.key, send);
-      if (outcome !== null) outcomes.push(outcome);
+      try {
+        const outcome = await this.close(record.key, send);
+        if (outcome !== null) outcomes.push(outcome);
+      } catch (err) {
+        console.warn(
+          `mpp: failed to close session ${record.sessionId}, its deposit ` +
+            "stays with the seller until the idle timeout:",
+          err,
+        );
+      }
     }
 
     return outcomes;

@@ -608,6 +608,38 @@ describe("closing a session", () => {
     expect(await manager.close("missing", async () => new Response())).toBeNull();
   });
 
+  it("keeps closing after one session fails to close", async () => {
+    // A network error against one seller must not cost the refunds owed by
+    // every other seller.
+    const { manager, payer } = newManager();
+    await payer.expectLabel(300, "one");
+    await payer.expectLabel(400, "two");
+
+    await manager.open({
+      key: "a",
+      origin: ORIGIN,
+      url: `${ORIGIN}/a`,
+      challenge: await offer({ depositSat: 300, label: "one" }),
+    });
+    await manager.open({
+      key: "b",
+      origin: ORIGIN,
+      url: `${ORIGIN}/b`,
+      challenge: await offer({ depositSat: 400, label: "two" }),
+    });
+
+    const outcomes = await manager.closeAll(async ({ url }) => {
+      if (url.endsWith("/a")) throw new Error("connection reset");
+      return receiptResponse({ reference: "x", refundStatus: "skipped" });
+    });
+
+    expect(outcomes).toHaveLength(1);
+
+    // The one that failed is still open, so a caller can retry or report it.
+    const stillOpen = await manager.listOpen();
+    expect(stillOpen.map((r) => r.key)).toEqual(["a"]);
+  });
+
   it("closes every open session", async () => {
     const { manager, payer } = newManager();
     await payer.expectLabel(300, "one");
