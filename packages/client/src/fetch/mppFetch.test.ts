@@ -19,9 +19,12 @@ import {
 } from "@aperture/core/mpp";
 import { createPayingFetch } from "./payingFetch.js";
 import { SessionCache } from "../cache/sessionStore.js";
-import { CredentialCache } from "../cache/credentialCache.js";
+import {
+  CredentialCache,
+  type CredentialStore,
+} from "../cache/credentialCache.js";
 import { TokenCache } from "../cache/tokenCache.js";
-import { ReceiptCache } from "../cache/receiptCache.js";
+import { ReceiptCache, type ReceiptStore } from "../cache/receiptCache.js";
 import { MockReturnInvoiceMinter } from "../mpp/mockMinter.js";
 import {
   ScriptedPayer,
@@ -84,6 +87,14 @@ function newClient(
     receiptCache?: ReceiptCache;
     intents?: readonly string[];
     buyerPolicy?: { assertAllowed: (input: unknown) => Promise<void> };
+
+    /**
+     * Stores that only have to satisfy the interface, so a test can hand
+     * the client one that fails. The caches above stay concretely typed,
+     * because most tests read back out of them.
+     */
+    receiptStore?: ReceiptStore;
+    credentialStore?: CredentialStore;
   } = {},
 ) {
   const payer = overrides.payer ?? new ScriptedPayer();
@@ -98,14 +109,14 @@ function newClient(
 
   const client = createPayingFetch({
     payer,
-    receiptCache,
+    receiptCache: overrides.receiptStore ?? receiptCache,
     tokenCache,
     ...(overrides.buyerPolicy === undefined
       ? {}
       : { buyerPolicy: overrides.buyerPolicy as never }),
     mpp: {
       sessionStore,
-      credentialCache,
+      credentialCache: overrides.credentialStore ?? credentialCache,
       ...(minter === undefined ? {} : { returnInvoiceMinter: minter }),
       ...(overrides.intents === undefined ? {} : { intents: overrides.intents }),
     },
@@ -210,7 +221,16 @@ describe("charge intent", () => {
     await payer.expectLabel(100, "charge");
     await client(URL_UNDER_TEST);
 
-    const token = (calls[1]?.authorization as string).slice("Payment ".length);
+    // Parse first. A body that decoded to nothing recognizable would also
+    // fail to contain "source", so the absence only means something once
+    // the credential is known to be well formed.
+    const authorization = calls[1]?.authorization as string;
+    const credential = parseCredential(authorization);
+
+    expect(credential.payload).toBeDefined();
+    expect(credential).not.toHaveProperty("source");
+
+    const token = authorization.slice("Payment ".length);
     expect(Buffer.from(token, "base64url").toString()).not.toContain("source");
   });
 
@@ -347,6 +367,34 @@ describe("charge intent", () => {
   });
 
   it("writes the spend to the receipt ledger before retrying", async () => {
+    // The retry has to fail for "before" to mean anything. Against a retry
+    // that succeeds, a ledger written afterwards looks identical, and the
+    // ordering this test is named for goes unchecked.
+    stubFetch(async (_sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await chargeChallenge({ amountSat: 100, label: "charge" }),
+        ]);
+      }
+      throw new Error("connection reset");
+    });
+
+    const { client, payer, receiptCache } = newClient({ intents: ["charge"] });
+    await payer.expectLabel(100, "charge");
+
+    await expect(client(URL_UNDER_TEST)).rejects.toThrow(/connection reset/);
+
+    const entry = receiptCache.get(await hashFor("charge"));
+    expect(entry?.amountSat).toBe(100);
+    expect(entry?.preimageHex).toBe(preimageFor("charge"));
+  });
+
+  it("serves the paid response when the post-payment stores fail", async () => {
+    // The money is gone the moment the payer settles. A ledger that refuses
+    // the write costs a gap in the audit trail; failing here would cost the
+    // caller the whole payment, which is strictly worse.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
     stubFetch(async (_sent, index) =>
       index === 0
         ? challengeResponse([
@@ -355,13 +403,29 @@ describe("charge intent", () => {
         : new Response("ok", { status: 200 }),
     );
 
-    const { client, payer, receiptCache } = newClient({ intents: ["charge"] });
+    const { client, payer } = newClient({
+      intents: ["charge"],
+      receiptStore: {
+        store() {
+          throw new Error("ledger offline");
+        },
+      },
+      credentialStore: {
+        get: () => null,
+        put() {
+          throw new Error("disk full");
+        },
+        delete: () => undefined,
+      },
+    });
     await payer.expectLabel(100, "charge");
-    await client(URL_UNDER_TEST);
 
-    const entry = receiptCache.get(await hashFor("charge"));
-    expect(entry?.amountSat).toBe(100);
-    expect(entry?.preimageHex).toBe(preimageFor("charge"));
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(200);
+    expect(payer.paid).toHaveLength(1);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
 
@@ -547,6 +611,55 @@ describe("session intent", () => {
       "https://api.example.com",
     );
     expect(session?.depositedSat).toBe(800);
+
+    // The server said the balance was gone, so the whole first deposit is
+    // spent and only the top-up is left, less the request that just went
+    // out on it. Carrying the stale estimate forward instead would leave
+    // the client believing it still had the first deposit to spend.
+    expect(client.sessions.remainingSat(session!)).toBe(498);
+  });
+
+  it("does not top up a request the caller has abandoned", async () => {
+    // Same rule as the open and charge paths: the wallet must not spend on
+    // a response nobody is waiting for. The top-up is the third way into a
+    // payment and the only one that starts from a session already open.
+    const controller = new AbortController();
+
+    stubFetch(async (_sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ]);
+      }
+      if (index === 1) return new Response("ok", { status: 200 });
+
+      controller.abort();
+      return challengeResponse(
+        [
+          await sessionChallenge({
+            depositSat: 500,
+            pricePerUnitSat: 2,
+            label: "topup",
+          }),
+        ],
+        { type: PROBLEM_LIGHTNING_INSUFFICIENT_BALANCE },
+      );
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+    await payer.expectLabel(500, "topup");
+
+    await client(URL_UNDER_TEST);
+    await expect(
+      client(URL_UNDER_TEST, { signal: controller.signal }),
+    ).rejects.toThrow(/aborted/i);
+
+    expect(payer.paid).toEqual([invoiceFor(300, "deposit")]);
   });
 
   it("opens a replacement when the server has forgotten the session", async () => {
@@ -666,6 +779,107 @@ describe("session intent", () => {
 
     expect(response.status).toBe(402);
     expect(payer.paid).toHaveLength(1);
+  });
+
+  it("does not buy a second deposit when the refusal is unexplained", async () => {
+    // The session intent is off the table after a refusal neither recovery
+    // explains, and the only way to see that is to offer a session the
+    // client does not already hold. A replacement offered under the realm
+    // the client is already in resolves to the session it has, so a client
+    // that took the offer anyway would look identical to one that refused.
+    stubFetch(async (_sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ]);
+      }
+      if (index === 1) return new Response("ok", { status: 200 });
+      return challengeResponse(
+        [
+          await sessionChallenge({
+            depositSat: 900,
+            pricePerUnitSat: 2,
+            label: "elsewhere",
+            realm: "other.example.com",
+          }),
+        ],
+        { type: PROBLEM_VERIFICATION_FAILED },
+      );
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+    await payer.expectLabel(900, "elsewhere");
+
+    await client(URL_UNDER_TEST);
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(402);
+    expect(payer.paid).toEqual([invoiceFor(300, "deposit")]);
+
+    // And no second session was opened alongside the first.
+    expect(await client.sessions.listOpen()).toHaveLength(1);
+  });
+
+  it("does not draw the estimate down on a request the server refused", async () => {
+    // The estimate stands for what the server has charged. A response the
+    // server did not serve is one it did not price, and counting it would
+    // walk the balance to zero on an endpoint that is simply broken.
+    stubFetch(async (_sent, index) =>
+      index === 0
+        ? challengeResponse([
+            await sessionChallenge({
+              depositSat: 300,
+              pricePerUnitSat: 2,
+              label: "deposit",
+            }),
+          ])
+        : new Response("nope", { status: 500 }),
+    );
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    const response = await client(URL_UNDER_TEST);
+    expect(response.status).toBe(500);
+
+    const session = await client.sessions.findForOrigin(
+      "https://api.example.com",
+    );
+    expect(client.sessions.remainingSat(session!)).toBe(300);
+  });
+
+  it("does not draw the estimate down on a refused bearer request", async () => {
+    // Same rule on the other path: a bearer request that never reaches a
+    // 402 is charged in the paying fetch itself rather than in the flow.
+    stubFetch(async (_sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ]);
+      }
+      if (index === 1) return new Response("ok", { status: 200 });
+      return new Response("nope", { status: 500 });
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    await client(URL_UNDER_TEST);
+    expect((await client(URL_UNDER_TEST)).status).toBe(500);
+
+    const session = await client.sessions.findForOrigin(
+      "https://api.example.com",
+    );
+    expect(client.sessions.remainingSat(session!)).toBe(298);
   });
 
   it("hands back a 402 whose body the caller can still read", async () => {
@@ -891,6 +1105,15 @@ describe("concurrent requests against one session", () => {
   });
 
   it("pays one top-up when several requests exhaust the balance at once", async () => {
+    // The seller refuses every bearer request until a top-up has settled,
+    // and serves them once one has. Letting the three concurrent requests
+    // succeed is the point: a run where all three rejected would satisfy
+    // the payment count on its own, and swallowing their outcomes would
+    // make this test pass on a client that lost every request it coalesced.
+    const payer = new ScriptedPayer();
+    await payer.expectLabel(300, "deposit");
+    await payer.expectLabel(500, "topup");
+
     const { calls } = stubFetch(async (sent) => {
       if (sent.authorization === null) {
         return challengeResponse([
@@ -903,7 +1126,11 @@ describe("concurrent requests against one session", () => {
       }
 
       const payload = sessionPayload(sent.authorization);
-      if (payload.action === "bearer" && calls.length > 2) {
+      if (
+        payload.action === "bearer" &&
+        calls.length > 2 &&
+        payer.paid.length < 2
+      ) {
         return challengeResponse(
           [
             await sessionChallenge({
@@ -918,17 +1145,17 @@ describe("concurrent requests against one session", () => {
       return new Response("ok", { status: 200 });
     });
 
-    const { client, payer } = newClient();
-    await payer.expectLabel(300, "deposit");
-    await payer.expectLabel(500, "topup");
+    const { client } = newClient({ payer });
 
-    await client(URL_UNDER_TEST);
-    await Promise.all([
-      client(URL_UNDER_TEST).catch(() => undefined),
-      client(URL_UNDER_TEST).catch(() => undefined),
-      client(URL_UNDER_TEST).catch(() => undefined),
+    const first = await client(URL_UNDER_TEST);
+    const responses = await Promise.all([
+      client(URL_UNDER_TEST),
+      client(URL_UNDER_TEST),
+      client(URL_UNDER_TEST),
     ]);
 
+    expect(first.status).toBe(200);
+    expect(responses.map((r) => r.status)).toEqual([200, 200, 200]);
     expect(payer.paid).toEqual([
       invoiceFor(300, "deposit"),
       invoiceFor(500, "topup"),

@@ -126,6 +126,38 @@ describe("opening a session", () => {
     expect(entry?.preimageHex).toBe(record.depositPreimage);
   });
 
+  it("keeps the session when the payment ledger refuses the write", async () => {
+    // The deposit has settled by the time the ledger is asked. A gap in the
+    // audit trail is bad; throwing the session away, and the refund with
+    // it, over a failed audit write would be worse.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const payer = new ScriptedPayer();
+    await payer.expectLabel(300, "noledger");
+
+    const manager = new SessionManager({
+      payer,
+      store: new SessionCache(),
+      minter: new MockReturnInvoiceMinter(),
+      receiptStore: {
+        store() {
+          throw new Error("ledger offline");
+        },
+      },
+    });
+
+    const record = await manager.open({
+      key: "k",
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge: await offer({ depositSat: 300, label: "noledger" }),
+    });
+
+    expect(record.depositedSat).toBe(300);
+    expect(await manager.get("k")).not.toBeNull();
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
   it("asserts the buyer policy on the whole deposit", async () => {
     // Under a session the money moves at open, not per request, so the
     // policy has to see the deposit rather than the price of the request
@@ -250,7 +282,7 @@ describe("opening a session", () => {
   });
 
   it("returns the existing session instead of depositing again", async () => {
-    const { manager, payer, key, challenge } = await openOne();
+    const { manager, payer, key, challenge, record } = await openOne();
     const again = await manager.open({
       key,
       origin: ORIGIN,
@@ -258,8 +290,92 @@ describe("opening a session", () => {
       challenge,
     });
 
-    expect(again.sessionId).toBeDefined();
+    // The same session, not merely a session: `sessionId` is a non-optional
+    // string, so asserting only that it is defined would hold for a second
+    // one opened under a different id.
+    expect(again.sessionId).toBe(record.sessionId);
     expect(payer.paid).toHaveLength(1);
+  });
+
+  it("asserts the deposit on the larger of the quote and the invoice", async () => {
+    // The wallet pays what the invoice says, not what the quote says. Every
+    // fixture has the two agreeing, which is exactly the case that cannot
+    // tell a maximum from either operand on its own.
+    const assertAllowed = vi.fn(async (_input: unknown) => {});
+    const { manager, payer } = newManager({ buyerPolicy: { assertAllowed } });
+
+    const challenge = await offer({ depositSat: 300, label: "understated" });
+
+    // The seller quotes 300 and hands over an invoice for 900.
+    (challenge.request as { depositInvoice?: string }).depositInvoice =
+      invoiceFor(900, "understated");
+    payer.expect(invoiceFor(900, "understated"), preimageFor("understated"));
+
+    const record = await manager.open({
+      key: "k",
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge,
+    });
+
+    expect(assertAllowed).toHaveBeenCalledWith(
+      expect.objectContaining({ amountSat: 900 }),
+    );
+    expect(record.depositedSat).toBe(900);
+  });
+
+  it("refuses a minter that hands back an empty invoice", async () => {
+    // An empty string is not a refund path, and a deposit paid without one
+    // leaves every unspent satoshi with the seller.
+    const payer = new ScriptedPayer();
+    await payer.expectLabel(300, "emptymint");
+
+    const manager = new SessionManager({
+      payer,
+      store: new SessionCache(),
+      minter: { mintAmountlessInvoice: async () => ({ invoice: "" }) },
+    });
+
+    await expect(
+      manager.open({
+        key: "k",
+        origin: ORIGIN,
+        url: URL_UNDER_TEST,
+        challenge: await offer({ depositSat: 300, label: "emptymint" }),
+      }),
+    ).rejects.toThrow(/produced no invoice/);
+
+    expect(payer.paid).toEqual([]);
+  });
+
+  it("reports a store that will not hold the session it just paid for", async () => {
+    // The deposit has settled and the store refuses the write, so the
+    // session id and the deposit preimage are about to be lost along with
+    // the refund. Whatever else happens, this must not be silent.
+    const payer = new ScriptedPayer();
+    await payer.expectLabel(300, "lost");
+
+    const store = new SessionCache();
+    store.put = () => {
+      throw new Error("disk full");
+    };
+
+    const manager = new SessionManager({
+      payer,
+      store,
+      minter: new MockReturnInvoiceMinter(),
+    });
+
+    await expect(
+      manager.open({
+        key: "k",
+        origin: ORIGIN,
+        url: URL_UNDER_TEST,
+        challenge: await offer({ depositSat: 300, label: "lost" }),
+      }),
+    ).rejects.toThrow(/disk full/);
+
+    expect(payer.paid).toEqual([invoiceFor(300, "lost")]);
   });
 });
 
@@ -365,6 +481,46 @@ describe("topping up", () => {
     expect(topped.sessionId).toBe(record.sessionId);
   });
 
+  it("asserts the buyer policy on a top-up too", async () => {
+    // A top-up is the second place money moves under a session, and it is
+    // unbounded: nothing stops a seller from refusing every bearer request
+    // and quoting another deposit each time. The policy is what bounds it.
+    const seen: number[] = [];
+    const payer = new ScriptedPayer();
+    await payer.expectLabel(300, "policy-open");
+    await payer.expectLabel(500, "policy-topup");
+
+    const manager = new SessionManager({
+      payer,
+      store: new SessionCache(),
+      minter: new MockReturnInvoiceMinter(),
+      buyerPolicy: {
+        assertAllowed: async (input: { amountSat: number }) => {
+          seen.push(input.amountSat);
+          if (input.amountSat > 300) throw new Error("over budget");
+        },
+      },
+    });
+
+    const challenge = await offer({ depositSat: 300, label: "policy-open" });
+    const key = SessionManager.key(ORIGIN, challenge.params.realm);
+    await manager.open({ key, origin: ORIGIN, url: URL_UNDER_TEST, challenge });
+
+    await expect(
+      manager.topUp({
+        key,
+        url: URL_UNDER_TEST,
+        challenge: await offer({ depositSat: 500, label: "policy-topup" }),
+      }),
+    ).rejects.toThrow(/over budget/);
+
+    expect(seen).toEqual([300, 500]);
+    expect(payer.paid).toEqual([invoiceFor(300, "policy-open")]);
+
+    const record = (await manager.get(key)) as SessionRecord;
+    expect(record.depositedSat).toBe(300);
+  });
+
   it("refuses to top up a session that is not open", async () => {
     const { manager } = newManager();
     await expect(
@@ -419,6 +575,19 @@ describe("balance estimation", () => {
 
     const record = (await manager.get(key)) as SessionRecord;
     expect(manager.remainingSat(record)).toBe(0);
+  });
+
+  it("does not let a negative spend credit the balance back", async () => {
+    // The unit price comes off the wire. A seller quoting a negative one
+    // would otherwise refill the estimate for free, and the client would
+    // keep sending bearer requests against a balance it does not have.
+    const { manager, key } = await openOne({ depositSat: 300 });
+
+    await manager.recordSpend(key, 10);
+    await manager.recordSpend(key, -100);
+
+    const record = (await manager.get(key)) as SessionRecord;
+    expect(manager.remainingSat(record)).toBe(290);
   });
 
   it("says a top-up is due once the estimate cannot cover a unit", async () => {

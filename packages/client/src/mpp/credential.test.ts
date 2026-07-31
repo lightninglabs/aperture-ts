@@ -72,8 +72,15 @@ describe("buildChargeCredential", () => {
 
   it("leaves the payer identifier unset by default", () => {
     const header = toAuthorizationHeader(buildChargeCredential(FULL, "ab"));
-    const token = header.slice("Payment ".length);
 
+    // Parsing first is what makes the absence mean something: a token whose
+    // bytes decoded to anything unrecognizable would also fail to contain
+    // "source".
+    const parsed = parseCredential(header);
+    expect(parsed.challenge.id).toBe(FULL.id);
+    expect(parsed).not.toHaveProperty("source");
+
+    const token = header.slice("Payment ".length);
     expect(Buffer.from(token, "base64url").toString()).not.toContain("source");
   });
 
