@@ -40,7 +40,7 @@ seller-side Worker runtime and the buyer-side client SDK.
 
 ## Invariants
 
-- `initWasm()` must be called before any macaroon operation (`getWasm()` throws if not initialized).
+- `initWasm(source)` must be called before any macaroon operation (`getWasm()` throws if not initialized). It takes the compiled module or its bytes and requires `globalThis.Go` to already be defined; it never reads from disk. Node callers use `initWasmFromDisk()` from `@aperture/core/node`, which is the only module in the package that touches Node builtins, so Worker bundles stay free of them.
 - The WASM bridge uses `globalThis.apertureWasm` — only one instance can be active per isolate.
 - Caveat format is `condition=value` (single `=` delimiter, `SplitN(s, "=", 2)`).
 - Service caveat format is `services=name:tier,name2:tier2` matching Go's `encodeServicesCaveatValue`.

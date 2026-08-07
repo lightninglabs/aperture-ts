@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import { createHash, randomBytes } from "node:crypto";
-import { initWasm, type ApertureWasm } from "./wasm.js";
+import { type ApertureWasm } from "./wasm.js";
+import { initWasmFromDisk } from "../node/index.js";
 
 let wasm: ApertureWasm;
 
 beforeAll(async () => {
-  wasm = await initWasm();
+  wasm = await initWasmFromDisk();
 });
 
 describe("WASM bridge smoke tests", () => {
