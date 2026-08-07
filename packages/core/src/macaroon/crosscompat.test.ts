@@ -7,7 +7,8 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { readFile } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { initWasm, type ApertureWasm } from "./wasm.js";
+import { type ApertureWasm } from "./wasm.js";
+import { initWasmFromDisk } from "../node/index.js";
 
 interface TestVector {
   name: string;
@@ -23,7 +24,7 @@ let wasm: ApertureWasm;
 let vectors: TestVector[];
 
 beforeAll(async () => {
-  wasm = await initWasm();
+  wasm = await initWasmFromDisk();
 
   const thisDir = dirname(fileURLToPath(import.meta.url));
   const vectorPath = join(thisDir, "..", "..", "..", "wasm", "testdata", "vectors.json");

@@ -1,12 +1,14 @@
 /**
  * WASM loader and TypeScript wrapper for the Go-compiled L402 macaroon
- * bridge. Loads aperture.wasm and exposes typed functions for minting,
- * verifying, and manipulating macaroons.
+ * bridge. Exposes typed functions for minting, verifying, and manipulating
+ * macaroons.
+ *
+ * This module is runtime-agnostic on purpose: it never touches node:fs,
+ * node:path or import.meta.url, so it bundles cleanly for Cloudflare
+ * Workers. The caller supplies the compiled module or its bytes. Node
+ * callers who want the old read-it-off-disk behaviour should use
+ * `initWasmFromDisk` from "@aperture/core/node".
  */
-
-import { readFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { fileURLToPath } from "node:url";
 
 // --------------------------------------------------------------------------
 // Types exposed to consumers.
@@ -74,21 +76,38 @@ let initPromise: Promise<ApertureWasm> | null = null;
 
 /**
  * Initialize the WASM runtime. Safe to call multiple times; the module is
- * loaded only once. Returns the typed bridge interface.
+ * instantiated only once. Returns the typed bridge interface.
  *
- * @param wasmPath Optional override for the .wasm file path. When running
- *   in Node/Vitest this defaults to the dist/ directory next to the Go
- *   module. In Cloudflare Workers the caller should pass the imported WASM
- *   module binding.
+ * Two things must be in place before this runs. `globalThis.Go` has to be
+ * defined, which means the caller has already loaded the `wasm_exec.js`
+ * shim that ships next to `aperture.wasm`. And `source` has to be the
+ * compiled module or its bytes: in a Worker that is the imported `.wasm`
+ * module binding, in Node it is the file contents.
+ *
+ * Note that in Cloudflare Workers this cannot be called at module scope.
+ * The Go runtime schedules a timer during startup, and workerd only allows
+ * timers inside a request context, so initialize lazily on first request.
+ *
+ * @param source The compiled WebAssembly module, or the raw module bytes.
  */
 export async function initWasm(
-  wasmPath?: string | WebAssembly.Module,
+  source: WebAssembly.Module | BufferSource,
 ): Promise<ApertureWasm> {
   if (wasmInstance) return wasmInstance;
   if (initPromise) return initPromise;
 
-  initPromise = doInit(wasmPath);
-  wasmInstance = await initPromise;
+  initPromise = doInit(source);
+
+  try {
+    wasmInstance = await initPromise;
+  } catch (err) {
+    // Do not cache a failed attempt: a caller that fixes the input and
+    // retries should get a real second attempt rather than the first
+    // rejection forever.
+    initPromise = null;
+    throw err;
+  }
+
   return wasmInstance;
 }
 
@@ -103,51 +122,51 @@ export function getWasm(): ApertureWasm {
 }
 
 async function doInit(
-  wasmPathOrModule?: string | WebAssembly.Module,
+  source: WebAssembly.Module | BufferSource,
 ): Promise<ApertureWasm> {
-  // Load the Go wasm_exec.js runtime shim. It attaches a global `Go` class.
-  const wasmDir = resolveWasmDir();
-
-  // In Node/Vitest, we need to load wasm_exec.js. In CF Workers, the Go
-  // class may already be available.
-  if (typeof (globalThis as any).Go === "undefined") {
-    const wasmExecPath = join(wasmDir, "wasm_exec.js");
-    // Dynamic import of the wasm_exec.js shim which defines globalThis.Go.
-    await import(wasmExecPath);
+  // wasm_exec.js is the Go runtime shim that defines globalThis.Go. It is
+  // a side-effecting script rather than a module with exports, so the
+  // caller loads it: in a Worker as a bare `import` of the vendored file,
+  // in Node via initWasmFromDisk.
+  const GoClass = (globalThis as Record<string, any>).Go;
+  if (!GoClass) {
+    throw new Error(
+      "Go WASM runtime not loaded: globalThis.Go is undefined. Import " +
+        "the wasm_exec.js that ships alongside aperture.wasm before " +
+        "calling initWasm().",
+    );
   }
 
-  const GoClass = (globalThis as any).Go;
-  if (!GoClass) {
-    throw new Error("Go WASM runtime (wasm_exec.js) not loaded.");
+  if (!source) {
+    throw new Error(
+      "initWasm() requires the compiled module or its bytes. In a Worker, " +
+        'pass the imported .wasm module binding; in Node, use ' +
+        'initWasmFromDisk() from "@aperture/core/node".',
+    );
   }
 
   const go = new GoClass();
 
-  let instance: WebAssembly.Instance;
+  // WebAssembly.instantiate is overloaded: given a Module it resolves to
+  // an Instance, given bytes it resolves to { module, instance }.
+  const instantiated = await WebAssembly.instantiate(
+    source as WebAssembly.Module,
+    go.importObject,
+  );
+  const instance =
+    instantiated instanceof WebAssembly.Instance
+      ? instantiated
+      : (instantiated as WebAssembly.WebAssemblyInstantiatedSource).instance;
 
-  if (wasmPathOrModule instanceof WebAssembly.Module) {
-    // CF Workers pass a pre-compiled WebAssembly.Module.
-    instance = await WebAssembly.instantiate(
-      wasmPathOrModule,
-      go.importObject,
-    );
-  } else {
-    // Node/test path: read .wasm from disk.
-    const wasmFilePath = wasmPathOrModule ?? join(wasmDir, "aperture.wasm");
-    const wasmBuffer = await readFile(wasmFilePath);
-    const result = await WebAssembly.instantiate(
-      wasmBuffer,
-      go.importObject,
-    );
-    instance = result.instance;
-  }
-
-  // Start the Go program (it blocks in `select {}` so this returns
-  // immediately after registration).
-  go.run(instance);
+  // Start the Go program. bridge.go blocks in `select {}` to keep the
+  // instance alive after registering its exports, so go.run() never
+  // resolves and must not be awaited.
+  void go.run(instance);
 
   // The Go bridge registers itself as globalThis.apertureWasm.
-  const bridge = (globalThis as any).apertureWasm as ApertureWasm | undefined;
+  const bridge = (globalThis as Record<string, any>).apertureWasm as
+    | ApertureWasm
+    | undefined;
   if (!bridge) {
     throw new Error(
       "WASM bridge did not register globalThis.apertureWasm. " +
@@ -156,18 +175,4 @@ async function doInit(
   }
 
   return bridge;
-}
-
-function resolveWasmDir(): string {
-  // Resolve the wasm dist/ directory relative to this file.
-  // In the monorepo: packages/core/src/macaroon/wasm.ts
-  // WASM dir: packages/wasm/dist/
-  try {
-    const thisDir = dirname(fileURLToPath(import.meta.url));
-    // From src/macaroon/ -> ../../.. -> packages/ -> wasm/dist/
-    return join(thisDir, "..", "..", "..", "wasm", "dist");
-  } catch {
-    // Fallback for environments where import.meta.url isn't a file:// URL.
-    return join(process.cwd(), "packages", "wasm", "dist");
-  }
 }

@@ -12,7 +12,8 @@
     "./pricing": "./dist/pricing/index.js",
     "./receipts": "./dist/receipts/index.js",
     "./policy": "./dist/policy/index.js",
-    "./util": "./dist/util/index.js"
+    "./util": "./dist/util/index.js",
+    "./node": "./dist/node/index.js"
   },
   "scripts": {
     "build": "tsup",
