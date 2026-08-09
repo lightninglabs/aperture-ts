@@ -44,6 +44,7 @@ export function createApertureWorkerRuntime(
           macaroonVerifier: config.macaroonVerifier,
           receiptWriter: config.receiptWriter,
           stateStore: config.stateStore,
+          logger: config.logger,
         };
 
         return await handleRequest(

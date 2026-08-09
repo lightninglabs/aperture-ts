@@ -43,11 +43,13 @@ forwarding, and async receipt emission into a single Worker fetch handler.
 - Receipt emission uses `ctx.waitUntil()` and must never block the response path.
 - DO naming convention: `seller:${sellerId}` for the Durable Object instance name.
 - Auth context headers to origin: `X-Aperture-Seller-Id`, `X-Aperture-Route-Id`, `X-Aperture-Payment-Hash`, `X-Aperture-Tier`.
+- Invoice backend failures never reach the buyer verbatim. `issueChallenge` catches everything the `InvoiceProvider` throws, logs the detail through `deps.logger`, and answers with `invoice_backend_unavailable` (503) plus a generic message.
 
 ## Testing
 
 - `src/worker/errors.test.ts` — 6 tests: error code → HTTP status mapping
 - `src/worker/tenantResolver.test.ts` — 3 tests: static + hostname-based resolution
+- `src/worker/sellerContext.test.ts` — 5 tests: invoice mint failure returns a generic 503, backend body stays out of the buyer response, detail is logged, healthy 402 challenge shape is unchanged
 - `src/invoices/mock.test.ts` — 3 tests: invoice creation, preimage storage, preimage→hash verification
 - `src/proxy/localHandler.test.ts` — 2 tests: handler invocation, auth context passing
 - Run: `pnpm --filter @aperture/http test`
