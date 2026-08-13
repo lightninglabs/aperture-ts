@@ -122,6 +122,19 @@ export async function runPaymentFlow(
   // every attempt to read the very explanation it was returned for.
   const problem = await readProblem(input.response.clone());
 
+  // Every session offer here is a fresher signature than whatever an open
+  // session for its realm has been echoing, and bearer credentials against
+  // an expired echo are refused, so the echoes are refreshed before any
+  // recovery reads the record. Pending handshakes are pinned to their own
+  // challenge and are not touched by this.
+  for (const challenge of input.challenges) {
+    if (challenge.intent !== INTENT_SESSION) continue;
+    await config.sessions.refreshChallenge(
+      SessionManager.key(input.origin, challenge.params.realm),
+      challenge,
+    );
+  }
+
   if (input.attemptedSession === null) {
     return runFreshFlow(config, input, budget, config.intents);
   }
@@ -193,12 +206,35 @@ async function recoverSession(
     return { kind: "fallthrough", intents: config.intents };
   }
 
+  // A bearer refused while echoing a challenge that had expired says
+  // nothing about the session itself. The echoes were refreshed above, so
+  // when a live challenge has replaced the stale one, the same bearer is
+  // retried once on the fresh echo, with no payment anywhere in the path.
+  const wasStale =
+    input.attemptedAction === "bearer" &&
+    isChallengeExpired(session.challenge, config.now?.() ?? Date.now());
+  if (
+    wasStale &&
+    current !== null &&
+    !isChallengeExpired(current.challenge, config.now?.() ?? Date.now())
+  ) {
+    return {
+      kind: "handled",
+      response: await retryWithSession(config, input, current),
+    };
+  }
+
   const insufficient =
     problem?.type === PROBLEM_LIGHTNING_INSUFFICIENT_BALANCE ||
     problem?.type === PROBLEM_PAYMENT_INSUFFICIENT ||
     (problem === null && config.sessions.remainingSat(session) <= 0);
 
-  if (!insufficient || !fundable) {
+  // The top-up offer must name the realm the session lives in: paying a
+  // deposit quoted for some other protection space cannot refill this
+  // balance, whatever the problem document said.
+  const sameRealm = offer !== null && offer.params.realm === session.realm;
+
+  if (!insufficient || !fundable || !sameRealm) {
     return { kind: "fallthrough", intents: [INTENT_CHARGE] };
   }
 

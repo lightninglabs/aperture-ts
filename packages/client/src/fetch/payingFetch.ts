@@ -320,7 +320,11 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
           fetch(
             new Request(closeUrl, {
               method: "GET",
-              headers: { Authorization: authorization },
+              // An empty authorization is the unauthenticated probe a close
+              // uses to draw a fresh challenge; it must go out with no
+              // Authorization header at all.
+              headers:
+                authorization === "" ? {} : { Authorization: authorization },
             }),
           )),
     );

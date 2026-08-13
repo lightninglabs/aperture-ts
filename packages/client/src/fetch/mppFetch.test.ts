@@ -977,6 +977,75 @@ describe("session intent", () => {
     expect(await client.sessions.listOpen()).toHaveLength(1);
   });
 
+  it("retries the bearer on a fresh echo when the stored one expired", async () => {
+    // Challenges expire and sessions outlive them. A bearer echoing the
+    // lapsed challenge is refused, the refusal's own 402 carries a fresh
+    // challenge for the realm, and the same bearer goes out once more on
+    // that echo, with no payment anywhere in the path.
+    // A different deposit quote, so the fresh challenge's id differs from
+    // the one the session was opened against.
+    const freshOffer = await sessionChallenge({
+      depositSat: 400,
+      pricePerUnitSat: 2,
+      label: "deposit",
+    });
+
+    const { calls } = stubFetch(async (sent, index) => {
+      if (index === 0) {
+        return challengeResponse([
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ]);
+      }
+      if (sent.authorization !== null) {
+        const credential = JSON.parse(
+          Buffer.from(
+            sent.authorization.slice("Payment ".length),
+            "base64url",
+          ).toString(),
+        );
+        if (
+          credential.payload.action === "bearer" &&
+          credential.challenge.expires !== undefined
+        ) {
+          return challengeResponse([freshOffer]);
+        }
+      }
+      return new Response("ok", { status: 200 });
+    });
+
+    const { client, payer, sessionStore } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    await client(URL_UNDER_TEST);
+
+    // The session outlives the challenge it was opened against.
+    const record = sessionStore.list()[0]!;
+    sessionStore.put(record.key, {
+      ...record,
+      challenge: { ...record.challenge, expires: "2020-01-01T00:00:00Z" },
+    });
+
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(200);
+    expect(payer.paid).toHaveLength(1);
+
+    // Challenge, open, stale bearer, fresh bearer.
+    expect(calls).toHaveLength(4);
+    const retried = JSON.parse(
+      Buffer.from(
+        (calls[3]?.authorization as string).slice("Payment ".length),
+        "base64url",
+      ).toString(),
+    );
+    expect(retried.challenge.id).toBe(freshOffer.id);
+    expect(retried.payload.action).toBe("bearer");
+  });
+
   it("does not draw the estimate down on a request the server refused", async () => {
     // The estimate stands for what the server has charged. A response the
     // server did not serve is one it did not price, and counting it would

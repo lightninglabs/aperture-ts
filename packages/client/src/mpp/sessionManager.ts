@@ -42,7 +42,11 @@ import {
   requireBoundedAmount,
   resolveAmountSat,
 } from "../challenge/amountSafety.js";
-import type { SessionChallenge } from "./challenge.js";
+import {
+  isChallengeExpired,
+  paymentChallengesFromHeaders,
+  type SessionChallenge,
+} from "./challenge.js";
 import {
   buildSessionCredentialFromEcho,
   toAuthorizationHeader,
@@ -476,6 +480,40 @@ export class SessionManager {
   }
 
   /**
+   * Replace the stored challenge echo with a fresher one for the same
+   * realm.
+   *
+   * Challenges expire, sessions outlive them, and the server refuses any
+   * credential whose echoed challenge has lapsed, so a session that only
+   * ever echoed the challenge it was opened against would go dark once
+   * that challenge aged out, and its close, and therefore its refund,
+   * would be refused with it. Every 402 that carries a session offer for
+   * the realm is a fresh signature to echo, and this is where it lands.
+   *
+   * A pending handshake is never touched: the server verifies a
+   * handshake's preimage against the challenge its deposit was paid
+   * against, so that echo is pinned until the handshake is acknowledged.
+   */
+  async refreshChallenge(
+    key: string,
+    challenge: SessionChallenge,
+  ): Promise<void> {
+    if (isChallengeExpired(challenge.params, this.now())) return;
+
+    const record = await this.get(key);
+    if (record === null) return;
+    if (challenge.params.realm !== record.realm) return;
+    if (record.challenge.id === challenge.params.id) return;
+
+    await this.store.put(key, {
+      ...record,
+      challenge: toChallengeEcho(challenge.params),
+      pricePerUnitSat:
+        parseDecimalSat(challenge.request.amount) ?? record.pricePerUnitSat,
+    });
+  }
+
+  /**
    * Drop a session the server no longer recognizes.
    *
    * There is no refund to chase for a session the server says does not
@@ -539,8 +577,14 @@ export class SessionManager {
         await deposit.catch(() => undefined);
       }
 
-      const record = await this.get(key);
+      let record = await this.get(key);
       if (record === null) return null;
+
+      // A close echoing an expired challenge is refused before the session
+      // is even looked up, and a refund that cannot be asked for is a
+      // deposit lost. A bare request draws a fresh 402 whose challenge the
+      // close can echo instead.
+      record = await this.refreshForClose(record, send);
 
       const credential = buildSessionCredentialFromEcho(record.challenge, {
         action: "close",
@@ -880,6 +924,42 @@ export class SessionManager {
       // deposit just bought would be worse.
       console.warn("mpp: session payment ledger write failed:", err);
     }
+  }
+
+  /**
+   * Refresh a close's challenge echo when the stored one has expired.
+   *
+   * The probe goes through the caller's own sender with an empty
+   * authorization, which the sender must translate into a request with no
+   * Authorization header. A probe that fails, or a 402 that offers nothing
+   * usable, leaves the record as it was: sending the close with a stale
+   * echo and letting the server say no beats not asking at all.
+   */
+  private async refreshForClose(
+    record: SessionRecord,
+    send: SessionRequestSender,
+  ): Promise<SessionRecord> {
+    if (!isChallengeExpired(record.challenge, this.now())) return record;
+
+    try {
+      const probe = await send({ url: record.openUrl, authorization: "" });
+
+      for (const offer of paymentChallengesFromHeaders(probe)) {
+        if (offer.intent !== "session") continue;
+        if (offer.params.realm !== record.realm) continue;
+        if (isChallengeExpired(offer.params, this.now())) continue;
+
+        await this.refreshChallenge(record.key, offer);
+        return (await this.get(record.key)) ?? record;
+      }
+    } catch (err) {
+      console.warn(
+        "mpp: could not draw a fresh challenge for the close:",
+        err,
+      );
+    }
+
+    return record;
   }
 
   /** Claim the handshake slot for a key. The caller must release it. */

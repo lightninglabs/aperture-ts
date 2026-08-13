@@ -1022,6 +1022,175 @@ describe("the deposit handshake", () => {
   });
 });
 
+describe("refreshing the challenge echo", () => {
+  it("adopts a fresh challenge and its price for the same realm", async () => {
+    const { manager, key, record } = await openOne();
+
+    const fresh = await offer({
+      depositSat: 500,
+      pricePerUnitSat: 7,
+      label: "fresh",
+    });
+    await manager.refreshChallenge(key, fresh);
+
+    const updated = (await manager.get(key)) as SessionRecord;
+    expect(updated.challenge.id).toBe(fresh.params.id);
+    expect(updated.challenge.id).not.toBe(record.challenge.id);
+    expect(updated.pricePerUnitSat).toBe(7);
+  });
+
+  it("ignores an offer for another realm", async () => {
+    const { manager, key, record } = await openOne();
+
+    const params = await sessionChallenge({
+      depositSat: 500,
+      pricePerUnitSat: 7,
+      label: "elsewhere",
+      realm: "other.example.com",
+    });
+    const foreign = paymentChallengesFromHeaders(
+      challengeResponse([params]),
+    )[0] as SessionChallenge;
+    await manager.refreshChallenge(key, foreign);
+
+    const kept = (await manager.get(key)) as SessionRecord;
+    expect(kept.challenge.id).toBe(record.challenge.id);
+  });
+
+  it("ignores an offer that is already expired", async () => {
+    const { manager, key, record } = await openOne();
+
+    const stale = await offer({
+      depositSat: 500,
+      pricePerUnitSat: 7,
+      label: "stale",
+      expires: "2020-01-01T00:00:00Z",
+    });
+    await manager.refreshChallenge(key, stale);
+
+    const kept = (await manager.get(key)) as SessionRecord;
+    expect(kept.challenge.id).toBe(record.challenge.id);
+  });
+
+  it("never touches the challenge a pending handshake is pinned to", async () => {
+    const { manager, payer } = newManager();
+    await payer.expectLabel(300, "pinned");
+
+    const challenge = await offer({ depositSat: 300, label: "pinned" });
+    const key = SessionManager.key(ORIGIN, challenge.params.realm);
+    const record = await manager.open({
+      key,
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge,
+    });
+
+    const fresh = await offer({
+      depositSat: 500,
+      pricePerUnitSat: 7,
+      label: "fresher",
+    });
+    await manager.refreshChallenge(key, fresh);
+
+    const updated = (await manager.get(key)) as SessionRecord;
+    expect(updated.challenge.id).toBe(fresh.params.id);
+    expect(updated.pendingHandshake?.challenge.id).toBe(record.challenge.id);
+
+    const presentation = await manager.credentialForRequest(record);
+    expect(presentation.action).toBe("open");
+    const echoed = JSON.parse(
+      Buffer.from(
+        presentation.authorization.slice("Payment ".length),
+        "base64url",
+      ).toString(),
+    ).challenge;
+    expect(echoed.id).toBe(record.challenge.id);
+    await manager.reportPresentation(presentation, { ok: true, status: 200 });
+  });
+});
+
+describe("closing with an expired echo", () => {
+  it("draws a fresh challenge with a bare probe and echoes it", async () => {
+    const { manager, store, key, record } = await openOne();
+
+    // The session outlived the challenge it was opened against.
+    store.put(key, {
+      ...record,
+      challenge: { ...record.challenge, expires: "2020-01-01T00:00:00Z" },
+    });
+
+    const fresh = await offer({ depositSat: 300, label: "freshclose" });
+    const sent: string[] = [];
+
+    const outcome = await manager.close(key, async ({ authorization }) => {
+      sent.push(authorization);
+      if (authorization === "") {
+        return challengeResponse([fresh.params]);
+      }
+      return receiptResponse({
+        reference: record.sessionId,
+        refundStatus: "skipped",
+      });
+    });
+
+    expect(outcome).not.toBeNull();
+    expect(sent).toHaveLength(2);
+    expect(sent[0]).toBe("");
+
+    const echoed = JSON.parse(
+      Buffer.from((sent[1] as string).slice("Payment ".length), "base64url")
+        .toString(),
+    );
+    expect(echoed.challenge.id).toBe(fresh.params.id);
+    expect(echoed.payload).toMatchObject({
+      action: "close",
+      sessionId: record.sessionId,
+    });
+    expect(await manager.get(key)).toBeNull();
+  });
+
+  it("still sends the close when the probe yields nothing usable", async () => {
+    const { manager, store, key, record } = await openOne();
+
+    store.put(key, {
+      ...record,
+      challenge: { ...record.challenge, expires: "2020-01-01T00:00:00Z" },
+    });
+
+    const sent: string[] = [];
+    const outcome = await manager.close(key, async ({ authorization }) => {
+      sent.push(authorization);
+      if (authorization === "") {
+        return new Response("no challenges here", { status: 503 });
+      }
+      return receiptResponse({
+        reference: record.sessionId,
+        refundStatus: "skipped",
+      });
+    });
+
+    // Asking with the stale echo beats not asking at all.
+    expect(outcome).not.toBeNull();
+    expect(sent).toHaveLength(2);
+  });
+
+  it("does not probe when the stored echo is still live", async () => {
+    const { manager, key, record } = await openOne();
+
+    const sent: string[] = [];
+    await manager.close(key, async ({ authorization }) => {
+      sent.push(authorization);
+      return receiptResponse({
+        reference: record.sessionId,
+        refundStatus: "skipped",
+      });
+    });
+
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).not.toBe("");
+  });
+});
+
 describe("forgetting a session", () => {
   it("drops the record entirely", async () => {
     const { manager, store, key } = await openOne();
