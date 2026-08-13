@@ -397,6 +397,79 @@ describe("splitChallenges", () => {
     expect(parsePaymentChallenges(mixed)).toHaveLength(1);
   });
 
+  it("finds the Payment offer among aperture's merged LSAT, L402 and Payment", () => {
+    // This is the shape aperture actually puts on the wire with
+    // --enablempp: its MultiAuthenticator adds an LSAT offer, an L402 offer
+    // and a Payment offer as separate header lines, and Headers.get() hands
+    // all three back as one comma-joined string. The two legacy offers carry
+    // a macaroon and an invoice whose base64 and bech32 bodies are full of
+    // characters the scanner has to not mistake for structure.
+    const macaroon =
+      "AgEEbHNhdAJCAAA0lVQnJ5MgRGVfN6wPQ2xJHrUgzMHfTGF5cGVzdA";
+    const invoice =
+      "lntbs20u1p486sx0pp57n35ksxs45882tsjfrrccy97q6u5x2lrn9hqs4mc546fa8ve0zqs";
+    const merged =
+      `LSAT macaroon="${macaroon}", invoice="${invoice}", ` +
+      `L402 macaroon="${macaroon}", invoice="${invoice}", ` +
+      'Payment id="chal-abc123", realm="127.0.0.1:8504", ' +
+      'method="lightning", intent="charge", request="eyJhIjoxfQ", ' +
+      'expires="2099-01-01T00:00:00Z"';
+
+    expect(splitChallenges(merged).map((c) => c.scheme)).toEqual([
+      "LSAT",
+      "L402",
+      "Payment",
+    ]);
+
+    const challenges = parsePaymentChallenges(merged);
+    expect(challenges).toHaveLength(1);
+    expect(challenges[0]?.id).toBe("chal-abc123");
+    expect(challenges[0]?.intent).toBe("charge");
+    expect(challenges[0]?.realm).toBe("127.0.0.1:8504");
+
+    // The legacy offers must not bleed their parameters into the Payment
+    // challenge, which would leave it echoing something the server's HMAC
+    // never covered.
+    expect(challenges[0]).not.toHaveProperty("macaroon");
+    expect(challenges[0]?.request).toBe("eyJhIjoxfQ");
+  });
+
+  it("reads the Payment offer with parseChallengeHeader too", () => {
+    // parsePaymentChallenges is not the only door. parseChallengeHeader is
+    // the single-offer convenience, and it has to skip the legacy schemes
+    // rather than insisting the value opens with Payment: on a real
+    // --enablempp response it opens with LSAT.
+    const merged =
+      'LSAT macaroon="AgEEbHNhdAJCAAA", invoice="lntbs20u1fake", ' +
+      'L402 macaroon="AgEEbHNhdAJCAAA", invoice="lntbs20u1fake", ' +
+      'Payment id="chal-abc123", realm="127.0.0.1:8505", ' +
+      'method="lightning", intent="charge", request="eyJhIjoxfQ"';
+
+    const challenge = parseChallengeHeader(merged);
+
+    expect(challenge.id).toBe("chal-abc123");
+    expect(challenge.method).toBe("lightning");
+    expect(challenge.request).toBe("eyJhIjoxfQ");
+  });
+
+  it("skips a malformed Payment offer to reach a usable one", () => {
+    const merged =
+      'L402 macaroon="AgEEbHNhdAJCAAA", invoice="lntbs20u1fake", ' +
+      'Payment id="broken", realm="r", ' +
+      'Payment id="ok", realm="r", method="lightning", intent="charge", ' +
+      'request="eyJhIjoxfQ"';
+
+    expect(parseChallengeHeader(merged).id).toBe("ok");
+  });
+
+  it("still reports the missing parameters when no offer is usable", () => {
+    const merged =
+      'L402 macaroon="AgEEbHNhdAJCAAA", ' +
+      'Payment id="broken", realm="r"';
+
+    expect(() => parseChallengeHeader(merged)).toThrow(/missing/);
+  });
+
   it("keeps a parameter whose name collides with Object.prototype", () => {
     // Duplicate detection asks `key in params`, which walks the prototype
     // chain of an object literal. A parameter named for anything on

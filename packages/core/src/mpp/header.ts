@@ -105,34 +105,47 @@ export function parsePaymentChallenges(
 }
 
 /**
- * Parse a single `WWW-Authenticate: Payment` header value, throwing when it
- * is not a well-formed Payment challenge. Use `parsePaymentChallenges` when
- * the response may carry more than one offer.
+ * Parse the first `Payment` challenge out of a `WWW-Authenticate` value,
+ * throwing when there is none. Use `parsePaymentChallenges` when the response
+ * may carry more than one offer and the caller wants to choose.
+ *
+ * Challenges under other schemes are skipped rather than rejected. This is
+ * not a nicety: aperture with `--enablempp` answers a 402 with an LSAT offer,
+ * an L402 offer and a Payment offer, in that order, and the Fetch API joins
+ * those three field lines into one string before a client ever sees them.
+ * Insisting that the value open with `Payment` would fail on the very header
+ * this parser exists to read.
  */
 export function parseChallengeHeader(headerValue: string): ChallengeParams {
   const challenges = splitChallenges(headerValue);
-  const first = challenges[0];
 
-  if (first === undefined) {
+  if (challenges.length === 0) {
     throw new Error("mpp: empty WWW-Authenticate value");
   }
-  if (first.scheme.toLowerCase() !== AUTH_SCHEME.toLowerCase()) {
-    throw new Error(
-      `mpp: header does not use ${AUTH_SCHEME} scheme`,
-    );
+
+  const offers = challenges.filter(
+    (challenge) =>
+      challenge.scheme.toLowerCase() === AUTH_SCHEME.toLowerCase(),
+  );
+  const first = offers[0];
+
+  if (first === undefined) {
+    throw new Error(`mpp: header does not use ${AUTH_SCHEME} scheme`);
   }
 
-  const params = toChallengeParams(first.params);
-  if (params === null) {
-    const missing = REQUIRED_PARAMS.filter(
-      (name) => (first.params[name] ?? "") === "",
-    );
-    throw new Error(
-      `mpp: challenge missing ${missing.join(", ")} parameter(s)`,
-    );
+  // Take the first offer that is actually usable, so one malformed offer
+  // among several does not deny the caller the ones it could satisfy.
+  for (const offer of offers) {
+    const params = toChallengeParams(offer.params);
+    if (params !== null) return params;
   }
 
-  return params;
+  const missing = REQUIRED_PARAMS.filter(
+    (name) => (first.params[name] ?? "") === "",
+  );
+  throw new Error(
+    `mpp: challenge missing ${missing.join(", ")} parameter(s)`,
+  );
 }
 
 /**
