@@ -1,23 +1,97 @@
 /**
- * payingFetch: auto-paying fetch wrapper per design doc section 16.1.
+ * payingFetch: an auto-paying fetch wrapper.
+ *
+ * One 402 handler covers two protocols. L402 was here first and is
+ * unchanged; the Payment authentication scheme is dispatched to when the
+ * server's WWW-Authenticate carries a Payment challenge, which is how a
+ * seller that speaks both gets to offer both on the same response.
  *
  * Flow:
- * 1. Check token cache → attach L402 if cached.
+ * 1. Attach whatever credential is already paid for: an L402 token, a
+ *    Payment credential, or a session bearer.
  * 2. Fetch.
- * 3. If 402 → parse challenge → assert policy → pay invoice.
- * 4. Cache token → retry with L402 header.
+ * 3. On a 402, dispatch on the scheme the server offered.
+ * 4. Assert policy, pay once, store the credential, retry exactly once.
+ *
+ * The two disciplines that carry across both protocols are the ones worth
+ * stating: at most one payment per call, and exactly one retry after it.
+ * Whatever the retry returns is what the caller gets, 402 included. A
+ * client that pays again when the paid request is refused has built a loop
+ * with a wallet attached.
  */
 
 import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
+import { splitChallenges } from "@aperture/core/mpp";
 import { paymentHashFromPreimage } from "@aperture/core/util";
 import { parse402Response } from "../challenge/parse402.js";
+import { requireBoundedAmount } from "../challenge/amountSafety.js";
 import {
   TokenCache,
   type CachedToken,
   type TokenStore,
 } from "../cache/tokenCache.js";
 import { ReceiptCache, type ReceiptStore } from "../cache/receiptCache.js";
-import { attachL402Header, ensureIdempotencyKey } from "./retry.js";
+import {
+  CredentialCache,
+  type CredentialStore,
+} from "../cache/credentialCache.js";
+import type { SessionStore, SessionRecord } from "../cache/sessionStore.js";
+import { paymentChallengesFromHeaders } from "../mpp/challenge.js";
+import { runPaymentFlow } from "../mpp/flow.js";
+import {
+  SessionManager,
+  type CloseOutcome,
+  type ReturnInvoiceMinter,
+  type SessionPresentation,
+  type SessionRequestSender,
+} from "../mpp/sessionManager.js";
+import {
+  attachAuthorization,
+  attachL402Header,
+  ensureIdempotencyKey,
+} from "./retry.js";
+
+/** Configuration for the Payment authentication scheme half of the loop. */
+export interface MppConfig {
+  /**
+   * Which intents to take, most wanted first. A session amortizes the
+   * wallet round trip across many requests, so it is preferred when the
+   * server offers one and the wallet can mint the refund invoice a session
+   * needs.
+   */
+  intents?: readonly string[];
+
+  /**
+   * Where open sessions live. Defaults to a process-local cache, which
+   * loses every open deposit on restart; inject a durable store so the
+   * refunds stay reachable.
+   */
+  sessionStore?: SessionStore;
+
+  /**
+   * Storage for paid Payment credentials. Defaults to a process-local
+   * cache. Its job is to keep a retry that throws after the money moved
+   * from turning into a second payment on the next attempt.
+   */
+  credentialCache?: CredentialStore;
+
+  /** Wallet capability for minting the session's refund invoice. */
+  returnInvoiceMinter?: ReturnInvoiceMinter;
+
+  /**
+   * Open sessions even when there is no way to mint a return invoice,
+   * forfeiting the unspent deposit at close. Off by default; without a
+   * minter, session offers are declined and a charge offer is taken
+   * instead.
+   */
+  allowSessionWithoutRefund?: boolean;
+
+  /** Reported when a receipt disagrees with what the client paid for. */
+  onReceiptMismatch?: (mismatch: {
+    receipt: { reference: string; challengeId?: string };
+    reasons: string[];
+  }) => void;
+}
 
 export interface PayingFetchConfig {
   payer: InvoicePayer;
@@ -36,6 +110,9 @@ export interface PayingFetchConfig {
   receiptCache?: ReceiptStore;
 
   buyerPolicy?: BuyerPolicy;
+
+  /** Settings for the Payment authentication scheme. */
+  mpp?: MppConfig;
 }
 
 export type PayingFetchInit = RequestInit & {
@@ -44,20 +121,67 @@ export type PayingFetchInit = RequestInit & {
 };
 
 /**
- * Create a paying fetch function that auto-handles L402 challenges.
+ * A paying fetch, plus the session handles a caller needs on the way out.
+ *
+ * Sessions are the one piece of this client that owns money after a request
+ * finishes, so they are reachable rather than hidden: a process that exits
+ * without closing its sessions leaves the unspent deposits with the seller
+ * until the server's idle timeout decides what to do with them.
  */
-export function createPayingFetch(config: PayingFetchConfig) {
+export interface PayingFetch {
+  (input: RequestInfo | URL, init?: PayingFetchInit): Promise<Response>;
+
+  /** The session state machine, for callers that manage sessions directly. */
+  sessions: SessionManager;
+
+  /**
+   * Close every open session and collect the refunds.
+   *
+   * The default sender issues a bodyless GET to the URL each session was
+   * opened against, carrying the close credential. Which request a server
+   * expects a close on is the least settled part of the session draft, so
+   * `send` is here as the escape hatch: pass one if the seller wants
+   * something else.
+   */
+  closeSessions(send?: SessionRequestSender): Promise<CloseOutcome[]>;
+}
+
+/**
+ * Create a paying fetch that auto-handles L402 and Payment challenges.
+ */
+export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
   const tokenCache = config.tokenCache ?? new TokenCache();
   const receiptCache = config.receiptCache ?? new ReceiptCache();
+  const credentialCache = config.mpp?.credentialCache ?? new CredentialCache();
 
-  return async function payingFetch(
+  const sessions = new SessionManager({
+    payer: config.payer,
+    ...(config.mpp?.sessionStore === undefined
+      ? {}
+      : { store: config.mpp.sessionStore }),
+    ...(config.mpp?.returnInvoiceMinter === undefined
+      ? {}
+      : { minter: config.mpp.returnInvoiceMinter }),
+    receiptStore: receiptCache,
+    ...(config.buyerPolicy === undefined
+      ? {}
+      : { buyerPolicy: config.buyerPolicy }),
+    ...(config.mpp?.allowSessionWithoutRefund === undefined
+      ? {}
+      : { allowSessionWithoutRefund: config.mpp.allowSessionWithoutRefund }),
+    ...(config.mpp?.onReceiptMismatch === undefined
+      ? {}
+      : { onReceiptMismatch: config.mpp.onReceiptMismatch }),
+  });
+
+  const payingFetch = async function payingFetch(
     input: RequestInfo | URL,
     init?: PayingFetchInit,
   ): Promise<Response> {
     const incoming = new Request(input, init);
 
     // Buffer the request body once up front. A Request body is a one-shot
-    // stream: after the first fetch consumes it, the L402 retry could not
+    // stream: after the first fetch consumes it, the paid retry could not
     // re-send it. Every request below is rebuilt from these bytes so the
     // first attempt and the paid retry send identical payloads.
     const bodyBytes =
@@ -81,134 +205,356 @@ export function createPayingFetch(config: PayingFetchConfig) {
     });
     request = ensureIdempotencyKey(request, bodyBytes);
 
-    // Key tokens by the full origin (scheme://host[:port]), not the bare
-    // hostname: two proxies on different ports of the same host mint
-    // unrelated tokens, and a plaintext origin must never share a credential
-    // with a TLS one.
+    // Key credentials by the full origin (scheme://host[:port]), not the
+    // bare hostname: two proxies on different ports of the same host mint
+    // unrelated credentials, and a plaintext origin must never share one
+    // with a TLS origin.
     const url = new URL(request.url);
-    const cacheKey = TokenCache.cacheKey(
-      url.origin,
-      init?.routeId ?? url.pathname,
-      request.method,
-    );
+    const routeId = init?.routeId ?? url.pathname;
+    const cacheKey = TokenCache.cacheKey(url.origin, routeId, request.method);
 
-    // Step 1: Check cache.
-    const cached = await tokenCache.get(cacheKey);
-    const firstRequest = cached
-      ? attachL402Header(
-          request,
-          cached.macaroonB64,
-          cached.preimageHex,
-          bodyBytes,
-        )
-      : request;
+    const assertNotAborted = (): void => {
+      if (request.signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+    };
 
-    // Step 2: First fetch.
-    const firstResponse = await fetch(firstRequest);
+    // Step 1: Attach whatever this client has already paid for.
+    const attached = await attachExistingCredential({
+      request,
+      bodyBytes,
+      cacheKey,
+      tokenCache,
+      credentialCache,
+      sessions,
+      origin: url.origin,
+    });
+
+    // Step 2: First fetch. A session presentation's outcome goes back to
+    // the session manager whatever it was: a served bearer draws the
+    // balance estimate down, a served handshake retires itself, and a fetch
+    // that threw reports null so the handshake stays owed rather than being
+    // treated as answered.
+    let firstResponse: Response;
+    try {
+      firstResponse = await fetch(attached.request);
+    } catch (err) {
+      if (attached.presentation !== null) {
+        await sessions.reportPresentation(attached.presentation, null);
+      }
+      throw err;
+    }
+    if (attached.presentation !== null) {
+      await sessions.reportPresentation(attached.presentation, firstResponse);
+    }
 
     if (firstResponse.status !== 402) {
       return firstResponse;
     }
 
-    // Step 3: Parse challenge.
-    const challenge = await parse402Response(firstResponse);
-
-    // Step 4: Refuse to pay any invoice whose outflow cannot be bounded. A
-    // null amount means an invoice was present but its amount could not be
-    // decoded; a 0 amount means a genuine zero-amount invoice. In both
-    // cases the payer cannot bound the outflow, so paying would let the
-    // seller name an arbitrary price after the fact. Both are refused by
-    // default rather than passed to the budget policy as a free payment.
-    if (challenge.amountSat === null) {
-      throw new Error(
-        "L402 challenge invoice amount could not be decoded; " +
-          "refusing to pay an unbounded outflow",
-      );
-    }
-    if (challenge.amountSat <= 0) {
-      throw new Error(
-        "L402 challenge specifies a zero-amount invoice; refusing to pay " +
-          "an unbounded outflow",
-      );
-    }
-    const amountSat = challenge.amountSat;
-
-    // Step 5: Assert buyer policy.
-    if (config.buyerPolicy) {
-      await config.buyerPolicy.assertAllowed({
-        url: request.url,
-        host: url.hostname,
-        amountSat,
-        routeId: challenge.routeId || undefined,
-      });
+    // A cached credential the server just refused is spent, or bound to a
+    // challenge that is gone. Dropping it costs nothing, and keeping it
+    // would spend a wasted round trip on every later request to this route,
+    // since a credential the server never gave an expiry for has nothing to
+    // age it out.
+    if (attached.fromCredentialCache) {
+      await credentialCache.delete(cacheKey);
     }
 
-    // Step 6: Pay invoice. Re-check the abort signal first: the caller may
-    // have aborted while the policy was resolving, and the wallet must not
-    // spend on a request that has already been abandoned.
-    if (request.signal?.aborted) {
-      throw new DOMException("The operation was aborted.", "AbortError");
-    }
-    const payment = await config.payer.payInvoice({
-      invoice: challenge.invoice,
-      amountSat,
-      challengeId: challenge.challengeId,
-    });
-
-    // Step 7: Record the receipt and cache the token. Both happen before
-    // the retry: money has already moved, so a retry that throws must not
-    // lose the credential or the record of the spend. The payment hash is
-    // derived from the preimage itself (sha256(preimage) == payment_hash),
-    // making every receipt a self-contained proof of payment.
-    //
-    // The two writes are independent and neither may abort the request:
-    // the credential is in hand, so serving the response the user paid
-    // for beats failing on a durable-store error. A failed write degrades
-    // to at worst re-purchasing one bundle (token) or a gap in the local
-    // ledger (receipt), both bounded; failing here would waste the whole
-    // payment.
-    const token: CachedToken = {
-      macaroonB64: challenge.macaroon,
-      preimageHex: payment.preimageHex,
-      expiresAt: challenge.expiresAt,
-    };
-
-    // Derive the payment hash outside the receipt write, so a malformed
-    // preimage from a buggy payer cannot take the whole receipt down with
-    // it: a spend record with an empty hash still beats no record at all.
-    let paymentHash = "";
-    try {
-      paymentHash = await paymentHashFromPreimage(payment.preimageHex);
-    } catch (err) {
-      console.warn("payingFetch: unhashable payment preimage:", err);
-    }
-
-    const writes = await Promise.allSettled([
-      (async () =>
-        receiptCache.store({
-          paymentHash,
-          amountSat,
-          paidSat: payment.amountPaidSat,
-          invoice: challenge.invoice,
-          preimageHex: payment.preimageHex,
+    // Step 3: Dispatch on the scheme the server offered. This reads only
+    // headers, because a 402 body can be read once and whoever handles the
+    // challenge is the one who needs it.
+    const paymentChallenges = paymentChallengesFromHeaders(firstResponse);
+    if (paymentChallenges.length > 0) {
+      const result = await runPaymentFlow(
+        {
+          payer: config.payer,
+          sessions,
+          credentialCache,
+          receiptStore: receiptCache,
+          ...(config.buyerPolicy === undefined
+            ? {}
+            : { buyerPolicy: config.buyerPolicy }),
+          intents: config.mpp?.intents ?? ["session", "charge"],
+          ...(config.mpp?.onReceiptMismatch === undefined
+            ? {}
+            : { onReceiptMismatch: config.mpp.onReceiptMismatch }),
+        },
+        {
+          challenges: paymentChallenges,
+          response: firstResponse,
           url: request.url,
-          timestamp: new Date().toISOString(),
-        }))(),
-      (async () => tokenCache.put(cacheKey, token))(),
-    ]);
-    for (const write of writes) {
-      if (write.status === "rejected") {
-        console.warn("payingFetch: post-payment store failed:", write.reason);
+          origin: url.origin,
+          credentialKey: cacheKey,
+          attemptedSession: attached.session,
+          attemptedAction: attached.presentation?.action ?? null,
+          retry: async (authorization: string) =>
+            fetch(attachAuthorization(request, authorization, bodyBytes)),
+          assertNotAborted,
+        },
+      );
+
+      // The flow handing the original 402 straight back means it declined
+      // every Payment offer without paying or retrying, which is what a
+      // buyer pinned to L402 through an empty intents list looks like. A
+      // merged header that also carries an L402 challenge still has that
+      // door open, and a buyer configured away from the Payment scheme
+      // should walk through it rather than surface a 402 it was equipped
+      // to satisfy.
+      if (result !== firstResponse || !carriesL402Challenge(firstResponse)) {
+        return result;
       }
     }
 
-    // Step 8: Retry with L402.
-    const retryRequest = attachL402Header(
+    // A session credential that the server answered with something other
+    // than a Payment challenge tells us nothing about the session, so the
+    // response goes back as-is rather than being guessed at.
+    return runL402Flow({
+      config,
       request,
-      challenge.macaroon,
-      payment.preimageHex,
+      url,
       bodyBytes,
+      cacheKey,
+      tokenCache,
+      receiptCache,
+      response: firstResponse,
+      assertNotAborted,
+    });
+  } as PayingFetch;
+
+  payingFetch.sessions = sessions;
+  payingFetch.closeSessions = async (
+    send?: SessionRequestSender,
+  ): Promise<CloseOutcome[]> =>
+    sessions.closeAll(
+      send ??
+        (async ({ url: closeUrl, authorization }) =>
+          fetch(
+            new Request(closeUrl, {
+              method: "GET",
+              // An empty authorization is the unauthenticated probe a close
+              // uses to draw a fresh challenge; it must go out with no
+              // Authorization header at all.
+              headers:
+                authorization === "" ? {} : { Authorization: authorization },
+            }),
+          )),
     );
-    return fetch(retryRequest);
+
+  return payingFetch;
+}
+
+/**
+ * Whether a 402's WWW-Authenticate carries an L402 challenge the legacy
+ * flow can act on. Both spellings of the scheme count, and the challenge
+ * must actually carry the macaroon and invoice the flow needs, so a bare
+ * scheme token does not send the request into a parser that will throw.
+ */
+function carriesL402Challenge(response: Response): boolean {
+  const header = response.headers.get("WWW-Authenticate") ?? "";
+  if (header === "") return false;
+
+  return splitChallenges(header).some((challenge) => {
+    const scheme = challenge.scheme.toLowerCase();
+    return (
+      (scheme === "l402" || scheme === "lsat") &&
+      typeof challenge.params.macaroon === "string" &&
+      typeof challenge.params.invoice === "string"
+    );
+  });
+}
+
+/** What `attachExistingCredential` decided to present, and on what. */
+interface AttachedCredential {
+  request: Request;
+
+  /**
+   * The session whose credential was attached, or null when something else
+   * was. Only a request that actually carried a session credential can have
+   * that credential refused, so the rest of the loop reads this rather than
+   * merely whether a session exists.
+   */
+  session: SessionRecord | null;
+
+  /**
+   * The session presentation the request carries, when it carries one. Its
+   * outcome must go back through `sessions.reportPresentation`, because
+   * that is where a served handshake retires itself and a served bearer
+   * draws the balance estimate down.
+   */
+  presentation: SessionPresentation | null;
+
+  /** Whether the credential came out of the paid-credential cache. */
+  fromCredentialCache: boolean;
+}
+
+/**
+ * Attach the credential this client already holds for a request, if any.
+ *
+ * Only one Authorization header can be sent, so the order is most specific
+ * first: a credential paid for this exact origin, route, and method beats a
+ * session bearer, which is scoped to the whole origin and was found by
+ * guessing at the realm. Preferring the session would mean an origin that
+ * serves both protocols could present a bearer credential on a route it has
+ * a paid L402 token for, get refused, and buy the token a second time.
+ */
+async function attachExistingCredential(input: {
+  request: Request;
+  bodyBytes: ArrayBuffer | null;
+  cacheKey: string;
+  tokenCache: TokenStore;
+  credentialCache: CredentialStore;
+  sessions: SessionManager;
+  origin: string;
+}): Promise<AttachedCredential> {
+  const paid = await input.credentialCache.get(input.cacheKey);
+  if (paid !== null && paid !== undefined) {
+    return {
+      request: attachAuthorization(
+        input.request,
+        paid.authorization,
+        input.bodyBytes,
+      ),
+      session: null,
+      presentation: null,
+      fromCredentialCache: true,
+    };
+  }
+
+  const token = await input.tokenCache.get(input.cacheKey);
+  if (token !== null && token !== undefined) {
+    return {
+      request: attachL402Header(
+        input.request,
+        token.macaroonB64,
+        token.preimageHex,
+        input.bodyBytes,
+      ),
+      session: null,
+      presentation: null,
+      fromCredentialCache: false,
+    };
+  }
+
+  const session = await input.sessions.findForOrigin(input.origin);
+  if (session !== null) {
+    const presentation = await input.sessions.credentialForRequest(session);
+    return {
+      request: attachAuthorization(
+        input.request,
+        presentation.authorization,
+        input.bodyBytes,
+      ),
+      session,
+      presentation,
+      fromCredentialCache: false,
+    };
+  }
+
+  return {
+    request: input.request,
+    session: null,
+    presentation: null,
+    fromCredentialCache: false,
   };
+}
+
+/**
+ * The original L402 buyer loop, unchanged in behavior and moved here so the
+ * two protocols read as siblings rather than as one wrapped in the other.
+ */
+async function runL402Flow(input: {
+  config: PayingFetchConfig;
+  request: Request;
+  url: URL;
+  bodyBytes: ArrayBuffer | null;
+  cacheKey: string;
+  tokenCache: TokenStore;
+  receiptCache: ReceiptStore;
+  response: Response;
+  assertNotAborted: () => void;
+}): Promise<Response> {
+  const { config, request, bodyBytes, tokenCache, receiptCache } = input;
+
+  const challenge = await parse402Response(input.response);
+
+  // Refuse to pay any invoice whose outflow cannot be bounded, whether
+  // because the amount would not decode or because the invoice carries no
+  // amount at all. Either way the seller could name its price after the
+  // fact, so neither is passed to the budget policy as a free payment.
+  const amountSat = requireBoundedAmount(challenge.amountSat, "L402 challenge");
+
+  if (config.buyerPolicy) {
+    await config.buyerPolicy.assertAllowed({
+      url: request.url,
+      host: input.url.hostname,
+      amountSat,
+      routeId: challenge.routeId || undefined,
+    });
+  }
+
+  // Re-check the abort signal: the caller may have aborted while the policy
+  // was resolving, and the wallet must not spend on a request that has
+  // already been abandoned.
+  input.assertNotAborted();
+
+  const payment = await config.payer.payInvoice({
+    invoice: challenge.invoice,
+    amountSat,
+    challengeId: challenge.challengeId,
+  });
+
+  // Record the receipt and cache the token. Both happen before the retry:
+  // money has already moved, so a retry that throws must not lose the
+  // credential or the record of the spend. The payment hash is derived from
+  // the preimage itself (sha256(preimage) == payment_hash), making every
+  // receipt a self-contained proof of payment.
+  //
+  // The two writes are independent and neither may abort the request: the
+  // credential is in hand, so serving the response the user paid for beats
+  // failing on a durable-store error. A failed write degrades to at worst
+  // re-purchasing one bundle (token) or a gap in the local ledger
+  // (receipt), both bounded; failing here would waste the whole payment.
+  const token: CachedToken = {
+    macaroonB64: challenge.macaroon,
+    preimageHex: payment.preimageHex,
+    expiresAt: challenge.expiresAt,
+  };
+
+  // Derive the payment hash outside the receipt write, so a malformed
+  // preimage from a buggy payer cannot take the whole receipt down with it:
+  // a spend record with an empty hash still beats no record at all.
+  let paymentHash = "";
+  try {
+    paymentHash = await paymentHashFromPreimage(payment.preimageHex);
+  } catch (err) {
+    console.warn("payingFetch: unhashable payment preimage:", err);
+  }
+
+  const writes = await Promise.allSettled([
+    (async () =>
+      receiptCache.store({
+        paymentHash,
+        amountSat,
+        paidSat: payment.amountPaidSat,
+        invoice: challenge.invoice,
+        preimageHex: payment.preimageHex,
+        url: request.url,
+        timestamp: new Date().toISOString(),
+      }))(),
+    (async () => tokenCache.put(input.cacheKey, token))(),
+  ]);
+  for (const write of writes) {
+    if (write.status === "rejected") {
+      console.warn("payingFetch: post-payment store failed:", write.reason);
+    }
+  }
+
+  const retryRequest = attachL402Header(
+    request,
+    challenge.macaroon,
+    payment.preimageHex,
+    bodyBytes,
+  );
+  return fetch(retryRequest);
 }

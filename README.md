@@ -148,6 +148,42 @@ const response = await payingFetch("https://api.example.com/v1/search", {
 // If 402 → auto-pays → retries → returns authorized response.
 ```
 
+### Buyer: Sessions over the Payment Scheme
+
+The same `payingFetch` also speaks the Machine Payments Protocol's `Payment`
+authentication scheme, dispatching on what the server put in
+`WWW-Authenticate`. Its `session` intent turns one deposit into a prepaid
+balance that later requests spend down without a wallet round trip, which is
+what makes per-token pricing for inference practical.
+
+```typescript
+const payingFetch = createPayingFetch({
+  payer: myLightningPayer,
+  buyerPolicy: new BudgetCapPolicy(1000),   // Asserted on the deposit.
+  mpp: {
+    // Required for a session: the amountless invoice the server pays the
+    // unspent balance back to on close. Without it, session offers are
+    // declined and a charge offer is taken instead.
+    returnInvoiceMinter: myWallet,
+
+    // Sessions hold real money. The default store is process-local, so a
+    // restart forgets the session id and with it the refund.
+    sessionStore: myDurableSessionStore,
+  },
+});
+
+// First call pays the deposit; the rest ride the session for free.
+for (const prompt of prompts) {
+  await payingFetch("https://api.example.com/v1/infer", {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+// Close on the way out to get the unspent balance back.
+const outcomes = await payingFetch.closeSessions();
+```
+
 ## How It Works
 
 ### L402 Protocol
@@ -164,6 +200,33 @@ credentials):
    Server verifies the macaroon signature and that `sha256(preimage) == paymentHash`.
 4. **Stateless verification**: After the initial challenge, verification requires
    only the root key and the credential — no database lookup needed.
+
+### Machine Payments Protocol
+
+[MPP](https://paymentauth.org/) generalizes the 402 flow into an HTTP
+authentication scheme named `Payment`, with the payment method (lightning)
+and the intent as extensible slots. The buyer SDK implements both Lightning
+intents:
+
+- **charge** (draft-lightning-charge-00): one invoice, one response. Pay it,
+  return the preimage in the credential payload, retry once. Closest to what
+  L402 already did.
+- **session** (draft-lightning-session-00): a prepaid balance with four
+  credential actions. `open` pays a deposit and hands the server an
+  amountless return invoice; `bearer` authenticates every later request with
+  no payment at all; `topUp` adds funds when the balance runs low; `close`
+  ends the session and the server pays the remainder back.
+
+A server binds each challenge's parameters into its `id` with an HMAC and
+verifies that binding from the copy the client echoes back, so the client
+returns every parameter byte for byte rather than reconstructing any of
+them. Sessions treat the local balance as an estimate: the server prices
+metered work after the fact and settles the difference, and its number wins
+whenever the two disagree.
+
+Interop with the Go implementation in
+[aperture](https://github.com/lightninglabs/aperture) is checked in both
+directions from `packages/core/testdata/mpp`.
 
 ### Macaroon Caveats
 
@@ -322,13 +385,15 @@ aperture-ts/
 │   │   ├── Makefile           # GOOS=js GOARCH=wasm build
 │   │   └── testdata/          # Cross-compat test vectors
 │   ├── core/                  # @aperture/core
-│   │   └── src/
-│   │       ├── auth/          # L402 header parsing, challenge builder
-│   │       ├── macaroon/      # WASM loader, issuer, verifier, caveats
-│   │       ├── pricing/       # Pricing engine
-│   │       ├── receipts/      # Receipt schema + digest
-│   │       ├── policy/        # Route matching, buyer/seller policies
-│   │       └── util/          # Hashing, idempotency, clock
+│   │   ├── src/
+│   │   │   ├── auth/          # L402 header parsing, challenge builder
+│   │   │   ├── macaroon/      # WASM loader, issuer, verifier, caveats
+│   │   │   ├── mpp/           # Payment scheme: JCS, base64url, headers, HMAC binding
+│   │   │   ├── pricing/       # Pricing engine
+│   │   │   ├── receipts/      # Receipt schema + digest
+│   │   │   ├── policy/        # Route matching, buyer/seller policies
+│   │   │   └── util/          # Hashing, idempotency, clock
+│   │   └── testdata/mpp/      # Two-directional Go interop harness
 │   ├── http/                  # @aperture/http
 │   │   └── src/
 │   │       ├── worker/        # Runtime factory, request lifecycle, errors
@@ -339,15 +404,17 @@ aperture-ts/
 │   ├── client/                # @aperture/client
 │   │   └── src/
 │   │       ├── fetch/         # payingFetch, retry logic
-│   │       ├── challenge/     # 402 response parser
+│   │       ├── challenge/     # 402 response parser, amount bounding
+│   │       ├── mpp/           # Payment offers, credentials, receipts, sessions
 │   │       ├── policy/        # Budget, allowlist, approval policies
-│   │       ├── cache/         # Token cache, receipt cache
+│   │       ├── cache/         # Token, credential, session, receipt stores
 │   │       └── payer/         # InvoicePayer interface
 │   └── create-aperture-app/   # Scaffolding CLI + templates
 ├── examples/
 │   ├── worker-rest-paid-api/  # Paid REST API example
 │   ├── worker-mcp-paid-tool/  # Paid MCP server example
-│   └── buyer-client.ts        # Buyer SDK usage example
+│   ├── buyer-client.ts        # Buyer SDK usage example (L402)
+│   └── mpp-session-client.ts  # Buyer SDK usage example (Payment sessions)
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json
 └── package.json

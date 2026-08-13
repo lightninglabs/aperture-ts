@@ -12,6 +12,7 @@
     "./pricing": "./dist/pricing/index.js",
     "./receipts": "./dist/receipts/index.js",
     "./policy": "./dist/policy/index.js",
+    "./mpp": "./dist/mpp/index.js",
     "./util": "./dist/util/index.js",
     "./node": "./dist/node/index.js"
   },

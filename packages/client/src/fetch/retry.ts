@@ -74,3 +74,27 @@ export function ensureIdempotencyKey(
     body: body ?? undefined,
   });
 }
+
+/**
+ * Attach an arbitrary Authorization header to a request, used by the
+ * Payment authentication scheme, whose credential is a single opaque
+ * header value rather than a pair of fields.
+ *
+ * The `body` parameter carries the pre-buffered request body; pass `null`
+ * for bodyless requests such as GET and HEAD. It is required so that a
+ * caller cannot accidentally rebuild a bodyless request by using the old
+ * arity.
+ */
+export function attachAuthorization(
+  request: Request,
+  authorization: string,
+  body: ArrayBuffer | null,
+): Request {
+  const headers = new Headers(request.headers);
+  headers.set("Authorization", authorization);
+  return new Request(request.url, {
+    ...forwardedInit(request),
+    headers,
+    body: body ?? undefined,
+  });
+}
