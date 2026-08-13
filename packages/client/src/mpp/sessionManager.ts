@@ -27,6 +27,7 @@ import {
   METHOD_LIGHTNING,
   type Credential,
   type NeedTopUpEvent,
+  type SessionAction,
   type SessionPayload,
   type SessionReceipt,
 } from "@aperture/core/mpp";
@@ -118,11 +119,30 @@ export interface CloseOutcome {
   refundStatus: string | null;
 }
 
-/** The transport a close uses, so the manager does not own fetching. */
+/**
+ * The transport a close uses, so the manager does not own fetching.
+ *
+ * An empty `authorization` is a request the sender must issue with no
+ * Authorization header at all: it is the unauthenticated probe a close sends
+ * when its stored challenge has expired, to draw a fresh 402 whose challenge
+ * the close credential can echo.
+ */
 export type SessionRequestSender = (input: {
   url: string;
   authorization: string;
 }) => Promise<Response>;
+
+/**
+ * A session credential built for one specific request, together with what it
+ * is: the action decides both what the server does with the request and what
+ * the client must do with the answer, so the two travel together and come
+ * back through `reportPresentation`.
+ */
+export interface SessionPresentation {
+  key: string;
+  action: SessionAction;
+  authorization: string;
+}
 
 /**
  * How many times a close will wait for a deposit to finish before giving up
@@ -148,6 +168,20 @@ export class SessionManager {
     string,
     Promise<CloseOutcome | null>
   >();
+
+  /**
+   * Handshake presentations in flight, keyed by session key.
+   *
+   * The server refuses a replayed `open` outright, so two concurrent
+   * requests must not both carry one. The first caller to need the pending
+   * handshake claims this slot and presents it; everyone else awaits the
+   * outcome and then presents whatever the session's state calls for, which
+   * after a successful handshake is a plain bearer credential.
+   */
+  private readonly inFlightHandshake = new Map<string, Promise<void>>();
+
+  /** Resolvers for `inFlightHandshake`, keyed the same way. */
+  private readonly handshakeRelease = new Map<string, () => void>();
 
   constructor(private readonly config: SessionManagerConfig) {
     this.store = config.store ?? new SessionCache();
@@ -194,12 +228,148 @@ export class SessionManager {
     return this.remainingSat(record) < record.pricePerUnitSat * units;
   }
 
-  /** Build the bearer credential for an open session. */
+  /**
+   * Build the bearer credential for an open session.
+   *
+   * The deposit preimage rides along because the server demands it on every
+   * bearer request: it is the proof that the party spending the balance is
+   * the one that funded it, and a bearer credential without it is refused
+   * before the session is even looked up.
+   */
   bearerCredential(record: SessionRecord): Credential<SessionPayload> {
     return buildSessionCredentialFromEcho(record.challenge, {
       action: "bearer",
       sessionId: record.sessionId,
+      preimage: record.depositPreimage,
     });
+  }
+
+  /**
+   * Build the credential the session's current state requires.
+   *
+   * With no handshake outstanding this is a bearer credential. With one
+   * outstanding, the first caller claims the handshake slot and presents
+   * the `open` or `topUp` credential; concurrent callers wait for that
+   * presentation's outcome and then take whatever the state has become,
+   * which after a success is a bearer. Every presentation returned from
+   * here must be answered with `reportPresentation`, with `null` when no
+   * response arrived, or the slot stays claimed and later requests wait
+   * forever.
+   */
+  async credentialForRequest(
+    record: SessionRecord,
+  ): Promise<SessionPresentation> {
+    for (;;) {
+      const fresh = (await this.get(record.key)) ?? record;
+      const pending = fresh.pendingHandshake;
+
+      if (pending === undefined) {
+        return {
+          key: fresh.key,
+          action: "bearer",
+          authorization: toAuthorizationHeader(this.bearerCredential(fresh)),
+        };
+      }
+
+      const inFlight = this.inFlightHandshake.get(fresh.key);
+      if (inFlight !== undefined) {
+        // Another request is presenting the handshake right now. Wait for
+        // its answer, then re-read the state it left behind.
+        await inFlight;
+        continue;
+      }
+
+      this.claimHandshake(fresh.key);
+
+      const payload: SessionPayload =
+        pending.action === "open"
+          ? {
+              action: "open",
+              preimage: fresh.depositPreimage,
+              ...(fresh.returnInvoice === ""
+                ? {}
+                : { returnInvoice: fresh.returnInvoice }),
+            }
+          : {
+              action: "topUp",
+              sessionId: fresh.sessionId,
+              ...(fresh.topUpPreimage === undefined
+                ? {}
+                : { topUpPreimage: fresh.topUpPreimage }),
+            };
+
+      return {
+        key: fresh.key,
+        action: pending.action,
+        authorization: toAuthorizationHeader(
+          buildSessionCredentialFromEcho(pending.challenge, payload),
+        ),
+      };
+    }
+  }
+
+  /**
+   * Record the server's answer to a presented session credential.
+   *
+   * Pass `null` when no response arrived at all, which releases the
+   * handshake slot without concluding anything: the next request re-reads
+   * the state and presents the handshake again.
+   *
+   * The two handshakes settle on different evidence, because the server
+   * treats their replays differently. An `open` is acknowledged on success
+   * and also retired on an explicit 402: the server refuses a replayed open
+   * outright, so after any authoritative refusal the bearer probe is the
+   * recovery, not another open. A `topUp` is acknowledged only on success,
+   * because its replay is defined to credit at most once, and re-presenting
+   * it is the only way to deliver a credit whose first response was lost.
+   *
+   * A bearer that was served is also the moment the local balance estimate
+   * is drawn down. Handshake-carrying requests are served without a
+   * deduction, so only the bearer spends.
+   */
+  async reportPresentation(
+    presentation: SessionPresentation,
+    response: { ok: boolean; status: number } | null,
+  ): Promise<void> {
+    try {
+      if (response === null) return;
+
+      const record = await this.get(presentation.key);
+      if (record === null) return;
+
+      if (presentation.action === "bearer") {
+        if (response.ok && record.pricePerUnitSat !== null) {
+          await this.store.put(presentation.key, {
+            ...record,
+            spentEstimateSat:
+              record.spentEstimateSat + Math.max(0, record.pricePerUnitSat),
+            lastUsedAt: new Date(this.now()).toISOString(),
+          });
+        }
+        return;
+      }
+
+      const pending = record.pendingHandshake;
+      if (pending === undefined || pending.action !== presentation.action) {
+        return;
+      }
+
+      const settled =
+        response.ok ||
+        (presentation.action === "open" && response.status === 402);
+      if (!settled) return;
+
+      const cleared: SessionRecord = {
+        ...record,
+        lastUsedAt: new Date(this.now()).toISOString(),
+      };
+      delete cleared.pendingHandshake;
+      await this.store.put(presentation.key, cleared);
+    } finally {
+      if (presentation.action !== "bearer") {
+        this.releaseHandshake(presentation.key);
+      }
+    }
   }
 
   /**
@@ -508,12 +678,13 @@ export class SessionManager {
     });
 
     const timestamp = new Date(this.now()).toISOString();
+    const echo = toChallengeEcho(challenge.params);
     const record: SessionRecord = {
       key: input.key,
       sessionId,
       origin: input.origin,
       realm: challenge.params.realm,
-      challenge: toChallengeEcho(challenge.params),
+      challenge: echo,
       pricePerUnitSat: parseDecimalSat(request.amount) ?? null,
       depositedSat: depositSat,
       spentEstimateSat: 0,
@@ -522,6 +693,10 @@ export class SessionManager {
       openUrl: input.url,
       openedAt: timestamp,
       lastUsedAt: timestamp,
+
+      // The server does not know this session exists until it has seen the
+      // open credential, so the next request must carry it.
+      pendingHandshake: { action: "open", challenge: echo },
     };
 
     await this.store.put(input.key, record);
@@ -534,6 +709,19 @@ export class SessionManager {
   ): Promise<SessionRecord> {
     const { challenge } = input;
     const request = challenge.request;
+
+    // A handshake that has not been acknowledged holds the only preimage
+    // that can deliver its deposit, and this method would overwrite it.
+    // Presenting the outstanding credential costs nothing at the wallet;
+    // paying another deposit on top of an undelivered one costs the whole
+    // earlier deposit.
+    if (record.pendingHandshake !== undefined) {
+      throw new Error(
+        `mpp: session ${record.sessionId} has an unacknowledged ` +
+          `${record.pendingHandshake.action} handshake; present it before ` +
+          "buying another deposit",
+      );
+    }
 
     const invoice = request.depositInvoice ?? "";
     if (invoice === "") {
@@ -564,16 +752,22 @@ export class SessionManager {
       url: input.url,
     });
 
+    const echo = toChallengeEcho(challenge.params);
     const updated: SessionRecord = {
       ...record,
       // Carry the fresh challenge forward: it is the most recent thing the
       // server signed for this realm, and bearer requests echo it.
-      challenge: toChallengeEcho(challenge.params),
+      challenge: echo,
       pricePerUnitSat:
         parseDecimalSat(request.amount) ?? record.pricePerUnitSat,
       depositedSat: record.depositedSat + topUpSat,
       topUpPreimage: payment.preimageHex,
       lastUsedAt: new Date(this.now()).toISOString(),
+
+      // The balance only grows once the server has seen the top-up
+      // credential, so the next request must carry it, echoing the very
+      // challenge whose payment hash the top-up preimage answers.
+      pendingHandshake: { action: "topUp", challenge: echo },
     };
 
     await this.store.put(input.key, updated);
@@ -686,6 +880,24 @@ export class SessionManager {
       // deposit just bought would be worse.
       console.warn("mpp: session payment ledger write failed:", err);
     }
+  }
+
+  /** Claim the handshake slot for a key. The caller must release it. */
+  private claimHandshake(key: string): void {
+    let release!: () => void;
+    const claim = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.inFlightHandshake.set(key, claim);
+    this.handshakeRelease.set(key, release);
+  }
+
+  /** Release the handshake slot, waking every request that waited on it. */
+  private releaseHandshake(key: string): void {
+    const release = this.handshakeRelease.get(key);
+    this.inFlightHandshake.delete(key);
+    this.handshakeRelease.delete(key);
+    release?.();
   }
 
   /**

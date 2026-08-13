@@ -41,6 +41,7 @@ import {
   SessionManager,
   type CloseOutcome,
   type ReturnInvoiceMinter,
+  type SessionPresentation,
   type SessionRequestSender,
 } from "../mpp/sessionManager.js";
 import {
@@ -48,7 +49,6 @@ import {
   attachL402Header,
   ensureIdempotencyKey,
 } from "./retry.js";
-import { toAuthorizationHeader } from "../mpp/credential.js";
 
 /** Configuration for the Payment authentication scheme half of the loop. */
 export interface MppConfig {
@@ -229,23 +229,25 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
       origin: url.origin,
     });
 
-    // Step 2: First fetch.
-    const firstResponse = await fetch(attached.request);
-    if (firstResponse.status !== 402) {
-      // A bearer request that the server served is a request the server
-      // charged for. This is the common case for a session, and the one
-      // place a spend happens with no payment to hang the bookkeeping off,
-      // so the estimate is drawn down here or it is never drawn down at
-      // all.
-      const session = attached.session;
-      if (
-        session !== null &&
-        firstResponse.ok &&
-        session.pricePerUnitSat !== null
-      ) {
-        await sessions.recordSpend(session.key, session.pricePerUnitSat);
+    // Step 2: First fetch. A session presentation's outcome goes back to
+    // the session manager whatever it was: a served bearer draws the
+    // balance estimate down, a served handshake retires itself, and a fetch
+    // that threw reports null so the handshake stays owed rather than being
+    // treated as answered.
+    let firstResponse: Response;
+    try {
+      firstResponse = await fetch(attached.request);
+    } catch (err) {
+      if (attached.presentation !== null) {
+        await sessions.reportPresentation(attached.presentation, null);
       }
+      throw err;
+    }
+    if (attached.presentation !== null) {
+      await sessions.reportPresentation(attached.presentation, firstResponse);
+    }
 
+    if (firstResponse.status !== 402) {
       return firstResponse;
     }
 
@@ -284,6 +286,7 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
           origin: url.origin,
           credentialKey: cacheKey,
           attemptedSession: attached.session,
+          attemptedAction: attached.presentation?.action ?? null,
           retry: async (authorization: string) =>
             fetch(attachAuthorization(request, authorization, bodyBytes)),
           assertNotAborted,
@@ -330,12 +333,20 @@ interface AttachedCredential {
   request: Request;
 
   /**
-   * The session whose bearer credential was attached, or null when
-   * something else was. Only a request that actually carried a bearer
-   * credential can have that credential refused, so the rest of the loop
-   * reads this rather than merely whether a session exists.
+   * The session whose credential was attached, or null when something else
+   * was. Only a request that actually carried a session credential can have
+   * that credential refused, so the rest of the loop reads this rather than
+   * merely whether a session exists.
    */
   session: SessionRecord | null;
+
+  /**
+   * The session presentation the request carries, when it carries one. Its
+   * outcome must go back through `sessions.reportPresentation`, because
+   * that is where a served handshake retires itself and a served bearer
+   * draws the balance estimate down.
+   */
+  presentation: SessionPresentation | null;
 
   /** Whether the credential came out of the paid-credential cache. */
   fromCredentialCache: boolean;
@@ -369,6 +380,7 @@ async function attachExistingCredential(input: {
         input.bodyBytes,
       ),
       session: null,
+      presentation: null,
       fromCredentialCache: true,
     };
   }
@@ -383,25 +395,32 @@ async function attachExistingCredential(input: {
         input.bodyBytes,
       ),
       session: null,
+      presentation: null,
       fromCredentialCache: false,
     };
   }
 
   const session = await input.sessions.findForOrigin(input.origin);
   if (session !== null) {
-    const credential = input.sessions.bearerCredential(session);
+    const presentation = await input.sessions.credentialForRequest(session);
     return {
       request: attachAuthorization(
         input.request,
-        toAuthorizationHeader(credential),
+        presentation.authorization,
         input.bodyBytes,
       ),
       session,
+      presentation,
       fromCredentialCache: false,
     };
   }
 
-  return { request: input.request, session: null, fromCredentialCache: false };
+  return {
+    request: input.request,
+    session: null,
+    presentation: null,
+    fromCredentialCache: false,
+  };
 }
 
 /**

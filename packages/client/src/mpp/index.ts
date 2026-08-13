@@ -31,6 +31,7 @@ export {
   type CloseOutcome,
   type ReturnInvoiceMinter,
   type SessionManagerConfig,
+  type SessionPresentation,
   type SessionRequestSender,
 } from "./sessionManager.js";
 export { MockReturnInvoiceMinter } from "./mockMinter.js";

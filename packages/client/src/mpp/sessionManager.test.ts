@@ -75,6 +75,18 @@ function newManager(overrides: Partial<{
   return { manager, payer, store, receiptStore, minter };
 }
 
+/**
+ * Acknowledge a session's outstanding handshake, standing in for the paying
+ * fetch presenting it and the server accepting it.
+ */
+async function acknowledgeHandshake(
+  manager: SessionManager,
+  record: SessionRecord,
+): Promise<void> {
+  const presentation = await manager.credentialForRequest(record);
+  await manager.reportPresentation(presentation, { ok: true, status: 200 });
+}
+
 async function openOne(options: {
   depositSat?: number;
   label?: string;
@@ -93,6 +105,7 @@ async function openOne(options: {
     url: URL_UNDER_TEST,
     challenge,
   });
+  await acknowledgeHandshake(fixtures.manager, record);
 
   return { ...fixtures, challenge, key, record, depositSat, label };
 }
@@ -504,7 +517,13 @@ describe("topping up", () => {
 
     const challenge = await offer({ depositSat: 300, label: "policy-open" });
     const key = SessionManager.key(ORIGIN, challenge.params.realm);
-    await manager.open({ key, origin: ORIGIN, url: URL_UNDER_TEST, challenge });
+    const record = await manager.open({
+      key,
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge,
+    });
+    await acknowledgeHandshake(manager, record);
 
     await expect(
       manager.topUp({
@@ -517,8 +536,8 @@ describe("topping up", () => {
     expect(seen).toEqual([300, 500]);
     expect(payer.paid).toEqual([invoiceFor(300, "policy-open")]);
 
-    const record = (await manager.get(key)) as SessionRecord;
-    expect(record.depositedSat).toBe(300);
+    const kept = (await manager.get(key)) as SessionRecord;
+    expect(kept.depositedSat).toBe(300);
   });
 
   it("refuses to top up a session that is not open", async () => {
@@ -836,6 +855,170 @@ describe("closing a session", () => {
 
     expect(outcomes).toHaveLength(2);
     expect(await manager.listOpen()).toEqual([]);
+  });
+});
+
+describe("the deposit handshake", () => {
+  it("presents the open credential until the server has answered it", async () => {
+    const { manager, payer } = newManager();
+    await payer.expectLabel(300, "shake");
+
+    const challenge = await offer({ depositSat: 300, label: "shake" });
+    const key = SessionManager.key(ORIGIN, challenge.params.realm);
+    const record = await manager.open({
+      key,
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge,
+    });
+
+    const first = await manager.credentialForRequest(record);
+    expect(first.action).toBe("open");
+
+    const payload = JSON.parse(
+      Buffer.from(first.authorization.slice("Payment ".length), "base64url")
+        .toString(),
+    ).payload;
+    expect(payload).toMatchObject({
+      action: "open",
+      preimage: preimageFor("shake"),
+    });
+    expect(payload.returnInvoice).toBeTruthy();
+
+    // The server accepts it, and only then does the session speak bearer.
+    await manager.reportPresentation(first, { ok: true, status: 200 });
+
+    const second = await manager.credentialForRequest(record);
+    expect(second.action).toBe("bearer");
+    const bearer = JSON.parse(
+      Buffer.from(second.authorization.slice("Payment ".length), "base64url")
+        .toString(),
+    ).payload;
+    expect(bearer).toMatchObject({
+      action: "bearer",
+      sessionId: await hashFor("shake"),
+      preimage: preimageFor("shake"),
+    });
+    await manager.reportPresentation(second, { ok: true, status: 200 });
+  });
+
+  it("keeps the open handshake owed when no response arrived", async () => {
+    const { manager, payer } = newManager();
+    await payer.expectLabel(300, "lostopen");
+
+    const challenge = await offer({ depositSat: 300, label: "lostopen" });
+    const key = SessionManager.key(ORIGIN, challenge.params.realm);
+    const record = await manager.open({
+      key,
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge,
+    });
+
+    const first = await manager.credentialForRequest(record);
+    await manager.reportPresentation(first, null);
+
+    const again = await manager.credentialForRequest(record);
+    expect(again.action).toBe("open");
+    await manager.reportPresentation(again, { ok: true, status: 200 });
+  });
+
+  it("retires a refused open, since the server never accepts its replay", async () => {
+    const { manager, payer } = newManager();
+    await payer.expectLabel(300, "refusedopen");
+
+    const challenge = await offer({ depositSat: 300, label: "refusedopen" });
+    const key = SessionManager.key(ORIGIN, challenge.params.realm);
+    const record = await manager.open({
+      key,
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge,
+    });
+
+    const first = await manager.credentialForRequest(record);
+    await manager.reportPresentation(first, { ok: false, status: 402 });
+
+    const probe = await manager.credentialForRequest(record);
+    expect(probe.action).toBe("bearer");
+    await manager.reportPresentation(probe, { ok: true, status: 200 });
+  });
+
+  it("keeps a refused topUp owed, since its replay credits at most once", async () => {
+    const { manager, payer, key, record } = await openOne();
+    await payer.expectLabel(500, "owedtopup");
+
+    const topped = await manager.topUp({
+      key,
+      url: URL_UNDER_TEST,
+      challenge: await offer({ depositSat: 500, label: "owedtopup" }),
+    });
+    expect(topped.pendingHandshake?.action).toBe("topUp");
+
+    const first = await manager.credentialForRequest(topped);
+    expect(first.action).toBe("topUp");
+    await manager.reportPresentation(first, { ok: false, status: 402 });
+
+    // Still owed: the refusal may have been about anything, and only a
+    // served topUp is known to have credited the balance.
+    const again = await manager.credentialForRequest(record);
+    expect(again.action).toBe("topUp");
+    const payload = JSON.parse(
+      Buffer.from(again.authorization.slice("Payment ".length), "base64url")
+        .toString(),
+    ).payload;
+    expect(payload).toMatchObject({
+      action: "topUp",
+      sessionId: record.sessionId,
+      topUpPreimage: preimageFor("owedtopup"),
+    });
+    await manager.reportPresentation(again, { ok: true, status: 200 });
+  });
+
+  it("refuses to buy a top-up while a handshake is unacknowledged", async () => {
+    const { manager, payer } = newManager();
+    await payer.expectLabel(300, "guard");
+    await payer.expectLabel(500, "guard-topup");
+
+    const challenge = await offer({ depositSat: 300, label: "guard" });
+    const key = SessionManager.key(ORIGIN, challenge.params.realm);
+    await manager.open({ key, origin: ORIGIN, url: URL_UNDER_TEST, challenge });
+
+    await expect(
+      manager.topUp({
+        key,
+        url: URL_UNDER_TEST,
+        challenge: await offer({ depositSat: 500, label: "guard-topup" }),
+      }),
+    ).rejects.toThrow(/unacknowledged open handshake/);
+
+    expect(payer.paid).toEqual([invoiceFor(300, "guard")]);
+  });
+
+  it("lets one presenter carry the handshake for every concurrent caller", async () => {
+    const { manager, payer } = newManager();
+    await payer.expectLabel(300, "herd");
+
+    const challenge = await offer({ depositSat: 300, label: "herd" });
+    const key = SessionManager.key(ORIGIN, challenge.params.realm);
+    const record = await manager.open({
+      key,
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge,
+    });
+
+    const first = await manager.credentialForRequest(record);
+    expect(first.action).toBe("open");
+
+    // A second caller arriving mid-presentation waits rather than sending a
+    // second open the server is guaranteed to refuse.
+    const waiting = manager.credentialForRequest(record);
+    await manager.reportPresentation(first, { ok: true, status: 200 });
+
+    const second = await waiting;
+    expect(second.action).toBe("bearer");
+    await manager.reportPresentation(second, { ok: true, status: 200 });
   });
 });
 

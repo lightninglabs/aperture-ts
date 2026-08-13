@@ -28,6 +28,7 @@ import { ReceiptCache, type ReceiptStore } from "../cache/receiptCache.js";
 import { MockReturnInvoiceMinter } from "../mpp/mockMinter.js";
 import {
   ScriptedPayer,
+  SessionSeller,
   challengeResponse,
   chargeChallenge,
   hashFor,
@@ -430,31 +431,173 @@ describe("charge intent", () => {
 });
 
 describe("session intent", () => {
-  it("opens a session and retries once with a bearer credential", async () => {
-    const { calls } = stubFetch(async (_sent, index) =>
-      index === 0
-        ? challengeResponse([
-            await sessionChallenge({
-              depositSat: 300,
-              pricePerUnitSat: 2,
-              label: "deposit",
-            }),
-          ])
-        : new Response("ok", { status: 200 }),
-    );
+  it("opens a session with the open handshake, then speaks bearer", async () => {
+    // The seller here enforces the reference state machine: a session
+    // exists only once an open credential carrying the deposit preimage and
+    // the return invoice has been accepted, and a bearer without that
+    // handshake, or without the preimage, is refused. This is the dialect
+    // the real server speaks, so it is the one the tests must fail on.
+    const seller = new SessionSeller({
+      offer: await sessionChallenge({
+        depositSat: 300,
+        pricePerUnitSat: 2,
+        label: "deposit",
+      }),
+    });
+    const { calls } = stubFetch(async (sent) => seller.handle(sent.authorization));
 
     const { client, payer } = newClient();
     await payer.expectLabel(300, "deposit");
 
+    const first = await client(URL_UNDER_TEST);
+    const second = await client(URL_UNDER_TEST);
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(payer.paid).toHaveLength(1);
+    expect(seller.refusals).toEqual([]);
+    expect(calls).toHaveLength(3);
+
+    const opened = sessionPayload(calls[1]?.authorization ?? null);
+    expect(opened.action).toBe("open");
+    expect(opened.preimage).toBe(preimageFor("deposit"));
+    expect(opened.returnInvoice).toBeTruthy();
+
+    const bearer = sessionPayload(calls[2]?.authorization ?? null);
+    expect(bearer.action).toBe("bearer");
+    expect(bearer.sessionId).toBe(await hashFor("deposit"));
+    expect(bearer.preimage).toBe(preimageFor("deposit"));
+  });
+
+  it("re-presents an open handshake whose response was lost", async () => {
+    // The server may or may not have seen the open that never answered, so
+    // the handshake stays owed. Re-presenting it costs nothing at the
+    // wallet, and it is the only credential that can deliver the deposit.
+    const seller = new SessionSeller({
+      offer: await sessionChallenge({
+        depositSat: 300,
+        pricePerUnitSat: 2,
+        label: "deposit",
+      }),
+    });
+
+    let dropOpen = true;
+    stubFetch(async (sent) => {
+      const authorization = sent.authorization;
+      if (authorization !== null && dropOpen) {
+        const payload = sessionPayload(authorization);
+        if (payload.action === "open") {
+          dropOpen = false;
+          throw new Error("connection reset");
+        }
+      }
+      return seller.handle(authorization);
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    await expect(client(URL_UNDER_TEST)).rejects.toThrow(/connection reset/);
     const response = await client(URL_UNDER_TEST);
 
     expect(response.status).toBe(200);
-    expect(calls).toHaveLength(2);
     expect(payer.paid).toHaveLength(1);
+    expect(seller.refusals).toEqual([]);
+  });
 
-    const payload = sessionPayload(calls[1]?.authorization ?? null);
-    expect(payload.action).toBe("bearer");
-    expect(payload.sessionId).toBe(await hashFor("deposit"));
+  it("converges on bearer after the server refuses a replayed open", async () => {
+    // The open was accepted but its response never arrived. The replay is
+    // refused outright, which retires the handshake, and the next request
+    // probes with the bearer credential the accepted open already earned.
+    const seller = new SessionSeller({
+      offer: await sessionChallenge({
+        depositSat: 300,
+        pricePerUnitSat: 2,
+        label: "deposit",
+      }),
+    });
+
+    let dropped = false;
+    stubFetch(async (sent) => {
+      const response = await seller.handle(sent.authorization);
+      if (sent.authorization !== null && !dropped) {
+        const payload = sessionPayload(sent.authorization);
+        if (payload.action === "open") {
+          // The seller processed the open; the answer is lost on the way
+          // back.
+          dropped = true;
+          throw new Error("connection reset");
+        }
+      }
+      return response;
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(300, "deposit");
+
+    await expect(client(URL_UNDER_TEST)).rejects.toThrow(/connection reset/);
+
+    // The replayed open is refused; the 402 goes back to the caller.
+    const refused = await client(URL_UNDER_TEST);
+    expect(refused.status).toBe(402);
+
+    // The handshake is retired, so this request presents the bearer the
+    // accepted open earned, and no second deposit is ever bought.
+    const served = await client(URL_UNDER_TEST);
+    expect(served.status).toBe(200);
+    expect(payer.paid).toHaveLength(1);
+  });
+
+  it("delivers an unacknowledged top-up before anything else", async () => {
+    // A topUp whose response was lost is re-presented rather than repaid:
+    // its replay is defined to credit at most once, so presenting it again
+    // is free, while paying again would strand the first top-up.
+    const openOffer = await sessionChallenge({
+      depositSat: 2,
+      pricePerUnitSat: 2,
+      label: "deposit",
+    });
+    const seller = new SessionSeller({
+      offer: openOffer,
+      topUpOffer: await sessionChallenge({
+        depositSat: 500,
+        pricePerUnitSat: 2,
+        label: "topup",
+      }),
+    });
+
+    let dropTopUp = true;
+    stubFetch(async (sent) => {
+      const response = await seller.handle(sent.authorization);
+      if (sent.authorization !== null && dropTopUp) {
+        const payload = sessionPayload(sent.authorization);
+        if (payload.action === "topUp") {
+          dropTopUp = false;
+          throw new Error("connection reset");
+        }
+      }
+      return response;
+    });
+
+    const { client, payer } = newClient();
+    await payer.expectLabel(2, "deposit");
+    await payer.expectLabel(500, "topup");
+
+    // Open on the first call, then drain the 2-sat deposit with one bearer.
+    await client(URL_UNDER_TEST);
+    await client(URL_UNDER_TEST);
+
+    // The next request finds the balance empty, pays the top-up, and the
+    // topUp presentation's response is lost after the seller credits it.
+    await expect(client(URL_UNDER_TEST)).rejects.toThrow(/connection reset/);
+
+    // The replay is answered without crediting twice, and the session works.
+    const response = await client(URL_UNDER_TEST);
+    expect(response.status).toBe(200);
+    expect(payer.paid).toEqual([
+      invoiceFor(2, "deposit"),
+      invoiceFor(500, "topup"),
+    ]);
   });
 
   it("prefers a session over a charge when both are offered", async () => {
@@ -552,11 +695,14 @@ describe("session intent", () => {
     await client(URL_UNDER_TEST);
     await client(URL_UNDER_TEST);
 
+    // The first call's paid retry carries the open handshake, which the
+    // server serves without a deduction, so only the second call's bearer
+    // request draws the estimate down.
     const session = await client.sessions.findForOrigin(
       "https://api.example.com",
     );
     expect(session).not.toBeNull();
-    expect(client.sessions.remainingSat(session!)).toBe(296);
+    expect(client.sessions.remainingSat(session!)).toBe(298);
   });
 
   it("tops up once when the server says the balance ran out", async () => {
@@ -601,11 +747,13 @@ describe("session intent", () => {
       invoiceFor(500, "topup"),
     ]);
 
-    // The top-up keeps the session, so the retry is still a bearer request
-    // under the original session id.
+    // The top-up keeps the session, and the retry is what delivers it: a
+    // topUp credential proving the fresh invoice's preimage against the
+    // very challenge it echoes, under the original session id.
     const payload = sessionPayload(calls[3]?.authorization ?? null);
-    expect(payload.action).toBe("bearer");
+    expect(payload.action).toBe("topUp");
     expect(payload.sessionId).toBe(await hashFor("deposit"));
+    expect(payload.topUpPreimage).toBe(preimageFor("topup"));
 
     const session = await client.sessions.findForOrigin(
       "https://api.example.com",
@@ -613,10 +761,11 @@ describe("session intent", () => {
     expect(session?.depositedSat).toBe(800);
 
     // The server said the balance was gone, so the whole first deposit is
-    // spent and only the top-up is left, less the request that just went
-    // out on it. Carrying the stale estimate forward instead would leave
-    // the client believing it still had the first deposit to spend.
-    expect(client.sessions.remainingSat(session!)).toBe(498);
+    // spent and only the top-up is left. The topUp-carrying retry itself is
+    // served without a deduction. Carrying the stale estimate forward
+    // instead would leave the client believing it still had the first
+    // deposit to spend.
+    expect(client.sessions.remainingSat(session!)).toBe(500);
   });
 
   it("does not top up a request the caller has abandoned", async () => {
@@ -698,9 +847,12 @@ describe("session intent", () => {
 
     expect(response.status).toBe(200);
     expect(payer.paid).toHaveLength(2);
-    expect(sessionPayload(calls[3]?.authorization ?? null).sessionId).toBe(
-      await hashFor("second"),
-    );
+
+    // The replacement session starts with its own open handshake, whose
+    // preimage is the proof of which deposit it delivers.
+    const payload = sessionPayload(calls[3]?.authorization ?? null);
+    expect(payload.action).toBe("open");
+    expect(payload.preimage).toBe(preimageFor("second"));
   });
 
   it("does not top up a session the server has already closed", async () => {
@@ -740,8 +892,8 @@ describe("session intent", () => {
     await client(URL_UNDER_TEST);
 
     const payload = sessionPayload(calls[3]?.authorization ?? null);
-    expect(payload.action).toBe("bearer");
-    expect(payload.sessionId).toBe(await hashFor("second"));
+    expect(payload.action).toBe("open");
+    expect(payload.preimage).toBe(preimageFor("second"));
   });
 
   it("hands back the 402 when the refusal is not about the balance", async () => {
@@ -876,10 +1028,13 @@ describe("session intent", () => {
     await client(URL_UNDER_TEST);
     expect((await client(URL_UNDER_TEST)).status).toBe(500);
 
+    // Nothing has drawn the estimate down: the first call's retry carried
+    // the open handshake, which is served without a deduction, and the
+    // second call's bearer request was refused.
     const session = await client.sessions.findForOrigin(
       "https://api.example.com",
     );
-    expect(client.sessions.remainingSat(session!)).toBe(298);
+    expect(client.sessions.remainingSat(session!)).toBe(300);
   });
 
   it("hands back a 402 whose body the caller can still read", async () => {

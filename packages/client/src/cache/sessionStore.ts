@@ -71,6 +71,28 @@ export interface SessionRecord {
   /** Preimage of the most recent top-up invoice, when there has been one. */
   topUpPreimage?: string;
 
+  /**
+   * The deposit handshake the server has not yet acknowledged, when one is
+   * outstanding.
+   *
+   * Paying a deposit is only half of what makes it a balance. The server
+   * learns about the money from the credential that proves it: an `open`
+   * carries the deposit preimage and the return invoice, a `topUp` carries
+   * the top-up preimage, and until the server has answered one of those, a
+   * bearer credential names a balance the server does not know about. So
+   * while this field is set, the next request presents this handshake
+   * instead of a bearer credential.
+   *
+   * The challenge is pinned here rather than read from `challenge` above,
+   * because the server verifies the handshake's preimage against the
+   * challenge the deposit was paid against, while `challenge` moves on
+   * whenever a fresher offer for the realm arrives.
+   */
+  pendingHandshake?: {
+    action: "open" | "topUp";
+    challenge: ChallengeEcho;
+  };
+
   /** URL the session was opened against, where a close is sent by default. */
   openUrl: string;
 

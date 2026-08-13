@@ -61,6 +61,41 @@ cd packages/core/testdata/mpp && node emit_transcript.mjs > /tmp/transcript.json
 go run verify_transcript.go /tmp/transcript.json
 ```
 
+## TypeScript to Go: the session state machine
+
+The codec transcript cannot catch a buyer that encodes everything perfectly
+and still speaks the wrong protocol, which is exactly the failure that
+strands a deposit: the server creates a session only from an `open`
+credential carrying the deposit preimage and the return invoice, demands the
+preimage on every bearer request, and credits a top-up only from a `topUp`
+credential proving the fresh invoice's preimage.
+
+`emit_session_transcript.mjs` runs a real `createPayingFetch` lifecycle
+(open, bearer, top-up, bearer, close) against a scripted seller and records
+every credential it produced. `verify_session_transcript.go` replays them
+through `auth.MPPSessionAuthenticator`, the reference component that makes
+those decisions, and also checks the transitions around replays: a bearer
+before its open is refused, a replayed open is refused, a replayed topUp is
+accepted without crediting twice, and a close only works once.
+
+```sh
+pnpm -r build
+cd packages/core/testdata/mpp
+node emit_session_transcript.mjs > /tmp/session_transcript.json
+
+# The scratch module needs aperture's own requires and replaces, since the
+# authenticator pulls in lnd and btcd: seed go.mod from aperture's, rename
+# the module, add a require and a local replace for
+# github.com/lightninglabs/aperture, copy its go.sum, and drop
+# verify_session_transcript.go alongside (with the ignore tag removed, or
+# named explicitly on the go run command line).
+go run verify_session_transcript.go /tmp/session_transcript.json
+```
+
+The return invoice in the emit script is a real amountless regtest BOLT11
+invoice with a ten-year expiry, because the authenticator zpay32-decodes it
+and refuses an open whose refund path it cannot parse.
+
 ## Where the two implementations still differ
 
 One difference is left, and it is deliberate rather than pending.

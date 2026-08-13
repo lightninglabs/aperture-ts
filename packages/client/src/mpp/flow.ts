@@ -30,6 +30,7 @@ import {
   PROBLEM_LIGHTNING_SESSION_NOT_FOUND,
   PROBLEM_PAYMENT_INSUFFICIENT,
   type ProblemDetails,
+  type SessionAction,
   type SessionReceipt,
 } from "@aperture/core/mpp";
 import type { InvoicePayer } from "@aperture/core";
@@ -86,6 +87,13 @@ export interface PaymentFlowInput {
 
   /** The session the first attempt used, when it used one. */
   attemptedSession: SessionRecord | null;
+
+  /**
+   * Which session action the first attempt presented, when it presented
+   * one. A refused `open` and a refused `bearer` call for different
+   * recoveries, and only the paying fetch knows which one just came back.
+   */
+  attemptedAction: SessionAction | null;
 
   /** Re-send the original request with this Authorization header. */
   retry: CredentialedRetry;
@@ -153,6 +161,24 @@ async function recoverSession(
     | null;
   const fundable =
     offer !== null && offer.request.depositInvoice !== undefined;
+
+  // A deposit whose handshake the server has not acknowledged comes before
+  // every other reading of the refusal: presenting it costs nothing at the
+  // wallet, and it is the only credential that can turn that deposit into a
+  // balance. This is skipped when the refused attempt was that very
+  // handshake, because re-sending the same credential at the same server in
+  // the same breath is not a recovery.
+  const current = await config.sessions.get(session.key);
+  if (
+    current !== null &&
+    current.pendingHandshake !== undefined &&
+    input.attemptedAction !== current.pendingHandshake.action
+  ) {
+    return {
+      kind: "handled",
+      response: await retryWithSession(config, input, current),
+    };
+  }
 
   const gone =
     problem?.type === PROBLEM_LIGHTNING_SESSION_NOT_FOUND ||
@@ -248,30 +274,37 @@ async function openSessionAndRetry(
 }
 
 /**
- * Send the paid request under a session, then charge the local estimate.
+ * Send the paid request under a session, presenting whatever credential the
+ * session's state calls for: the outstanding `open` or `topUp` handshake
+ * when there is one, a bearer credential otherwise.
  *
- * The estimate is decremented after the response comes back rather than
- * before it goes out, so a request the server never priced does not show up
- * as spend. It is only ever an estimate: the server settles metered work
- * against its own numbers afterwards.
+ * The presentation's outcome goes back to the session manager either way,
+ * because that is where the state advances: a served handshake retires
+ * itself, and a served bearer draws the balance estimate down. A retry that
+ * throws reports `null`, so the handshake stays owed rather than being
+ * treated as answered.
  */
 async function retryWithSession(
   config: PaymentFlowConfig,
   input: PaymentFlowInput,
   record: SessionRecord,
 ): Promise<Response> {
-  const credential = config.sessions.bearerCredential(record);
-  const response = await input.retry(toAuthorizationHeader(credential));
+  const presentation = await config.sessions.credentialForRequest(record);
 
+  let response: Response;
+  try {
+    response = await input.retry(presentation.authorization);
+  } catch (err) {
+    await config.sessions.reportPresentation(presentation, null);
+    throw err;
+  }
+
+  await config.sessions.reportPresentation(presentation, response);
   await noteReceipt(config, response, {
     method: METHOD_LIGHTNING,
     challengeId: record.challenge.id,
     reference: record.sessionId,
   });
-
-  if (response.ok && record.pricePerUnitSat !== null) {
-    await config.sessions.recordSpend(record.key, record.pricePerUnitSat);
-  }
 
   return response;
 }

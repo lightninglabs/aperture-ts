@@ -16,14 +16,21 @@ import {
   INTENT_CHARGE,
   INTENT_SESSION,
   METHOD_LIGHTNING,
+  PROBLEM_LIGHTNING_INSUFFICIENT_BALANCE,
+  PROBLEM_LIGHTNING_SESSION_CLOSED,
+  PROBLEM_LIGHTNING_SESSION_NOT_FOUND,
+  PROBLEM_VERIFICATION_FAILED,
   RECEIPT_STATUS_SUCCESS,
   computeChallengeId,
+  decodeRequestObject,
   encodeReceipt,
   encodeRequestObject,
   formatChallengeHeader,
+  parseCredential,
   type ChallengeParams,
   type ChargeRequest,
   type Receipt,
+  type SessionPayload,
   type SessionReceipt,
   type SessionRequest,
 } from "@aperture/core/mpp";
@@ -209,5 +216,252 @@ export class ScriptedPayer {
 
     this.paid.push(input.invoice);
     return { preimageHex: preimage, amountPaidSat: input.amountSat };
+  }
+}
+
+/** What a `SessionSeller` holds against one session id. */
+interface SellerSession {
+  balance: number;
+  spent: number;
+  open: boolean;
+}
+
+/**
+ * A stateful seller enforcing the reference implementation's session state
+ * machine, so a test cannot pass by speaking a dialect the real server
+ * refuses.
+ *
+ * The rules mirror aperture's session authenticator: a session exists only
+ * once an `open` credential carrying the deposit preimage and a return
+ * invoice has been accepted, a replayed `open` is refused, a `bearer` must
+ * name an existing session and prove the deposit preimage before its price
+ * is deducted, a `topUp` must prove the top-up preimage against the very
+ * challenge it echoes and credits at most once, and a `close` must prove
+ * the deposit preimage to collect the refund.
+ */
+export class SessionSeller {
+  private readonly sessions = new Map<string, SellerSession>();
+
+  /** Payment hashes that have funded something, mirroring the credit claim. */
+  private readonly credited = new Map<string, string>();
+
+  /** Every refusal, with its reason, for tests that assert on why. */
+  readonly refusals: string[] = [];
+
+  constructor(
+    private readonly options: {
+      /** The session offer a 402 carries. */
+      offer: ChallengeParams;
+
+      /** The offer an insufficient-balance 402 carries, when it differs. */
+      topUpOffer?: ChallengeParams;
+    },
+  ) {}
+
+  /** The balance a session still holds, for assertions. */
+  remaining(sessionId: string): number | null {
+    const session = this.sessions.get(sessionId);
+    return session === null || session === undefined
+      ? null
+      : session.balance - session.spent;
+  }
+
+  /** Answer one request the way the reference authenticator would. */
+  async handle(authorization: string | null): Promise<Response> {
+    if (authorization === null || authorization === "") {
+      return challengeResponse([this.options.offer]);
+    }
+
+    let payload: SessionPayload;
+    let request: SessionRequest;
+    try {
+      const credential = parseCredential<SessionPayload>(authorization);
+      payload = credential.payload;
+      request = decodeRequestObject<SessionRequest>(
+        credential.challenge.request,
+      );
+    } catch (err) {
+      return this.refuse(`unparseable credential: ${String(err)}`, {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    switch (payload.action) {
+      case "open":
+        return this.handleOpen(payload, request);
+      case "bearer":
+        return this.handleBearer(payload, request);
+      case "topUp":
+        return this.handleTopUp(payload, request);
+      case "close":
+        return this.handleClose(payload);
+      default:
+        return this.refuse(`unknown action ${String(payload.action)}`, {
+          type: PROBLEM_VERIFICATION_FAILED,
+        });
+    }
+  }
+
+  private async handleOpen(
+    payload: SessionPayload,
+    request: SessionRequest,
+  ): Promise<Response> {
+    if (!payload.preimage) {
+      return this.refuse("open without preimage", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+    if (!payload.returnInvoice) {
+      return this.refuse("open without return invoice", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    const sessionId = await paymentHashFromPreimage(payload.preimage);
+    if (sessionId !== request.paymentHash.toLowerCase()) {
+      return this.refuse("open preimage does not answer the challenge", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+    if (this.credited.has(sessionId)) {
+      return this.refuse("replayed open", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    this.credited.set(sessionId, sessionId);
+    this.sessions.set(sessionId, {
+      balance: Number(request.depositAmount ?? "0"),
+      spent: 0,
+      open: true,
+    });
+    return new Response("ok", { status: 200 });
+  }
+
+  private async handleBearer(
+    payload: SessionPayload,
+    request: SessionRequest,
+  ): Promise<Response> {
+    if (!payload.sessionId || !payload.preimage) {
+      return this.refuse("bearer without sessionId or preimage", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    const session = this.sessions.get(payload.sessionId);
+    if (session === undefined) {
+      return this.refuse("bearer for a session never opened", {
+        type: PROBLEM_LIGHTNING_SESSION_NOT_FOUND,
+      });
+    }
+    if (!session.open) {
+      return this.refuse("bearer for a closed session", {
+        type: PROBLEM_LIGHTNING_SESSION_CLOSED,
+      });
+    }
+    if ((await paymentHashFromPreimage(payload.preimage)) !== payload.sessionId) {
+      return this.refuse("bearer preimage does not prove the deposit", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    const price = Number(request.amount || "0");
+    if (session.spent + price > session.balance) {
+      return this.refuse(
+        "insufficient balance",
+        { type: PROBLEM_LIGHTNING_INSUFFICIENT_BALANCE },
+        this.options.topUpOffer,
+      );
+    }
+
+    session.spent += price;
+    return new Response("ok", { status: 200 });
+  }
+
+  private async handleTopUp(
+    payload: SessionPayload,
+    request: SessionRequest,
+  ): Promise<Response> {
+    if (!payload.sessionId || !payload.topUpPreimage) {
+      return this.refuse("topUp without sessionId or topUpPreimage", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    const session = this.sessions.get(payload.sessionId);
+    if (session === undefined || !session.open) {
+      return this.refuse("topUp for a session not open", {
+        type: PROBLEM_LIGHTNING_SESSION_NOT_FOUND,
+      });
+    }
+
+    const topUpHash = await paymentHashFromPreimage(payload.topUpPreimage);
+    if (topUpHash !== request.paymentHash.toLowerCase()) {
+      return this.refuse("topUp preimage does not answer the challenge", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    const creditedTo = this.credited.get(topUpHash);
+    if (creditedTo === payload.sessionId) {
+      // A replay of a credit already applied proceeds without crediting
+      // again, matching the reference: no satoshis move either way.
+      return new Response("ok", { status: 200 });
+    }
+    if (creditedTo !== undefined) {
+      return this.refuse("topUp payment already funded another session", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    this.credited.set(topUpHash, payload.sessionId);
+    session.balance += Number(request.depositAmount ?? "0");
+    return new Response("ok", { status: 200 });
+  }
+
+  private async handleClose(payload: SessionPayload): Promise<Response> {
+    if (!payload.sessionId || !payload.preimage) {
+      return this.refuse("close without sessionId or preimage", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    const session = this.sessions.get(payload.sessionId);
+    if (session === undefined) {
+      return this.refuse("close for a session never opened", {
+        type: PROBLEM_LIGHTNING_SESSION_NOT_FOUND,
+      });
+    }
+    if (!session.open) {
+      return this.refuse("close for a session already closed", {
+        type: PROBLEM_LIGHTNING_SESSION_CLOSED,
+      });
+    }
+    if ((await paymentHashFromPreimage(payload.preimage)) !== payload.sessionId) {
+      return this.refuse("close preimage does not prove the deposit", {
+        type: PROBLEM_VERIFICATION_FAILED,
+      });
+    }
+
+    session.open = false;
+    const refund = session.balance - session.spent;
+    return receiptResponse({
+      reference: payload.sessionId,
+      ...(refund > 0
+        ? { refundSats: refund, refundStatus: "succeeded" as const }
+        : { refundStatus: "skipped" as const }),
+    });
+  }
+
+  private refuse(
+    reason: string,
+    problem: { type: string },
+    offer?: ChallengeParams,
+  ): Response {
+    this.refusals.push(reason);
+    return challengeResponse(
+      [offer ?? this.options.offer],
+      problem,
+    );
   }
 }
