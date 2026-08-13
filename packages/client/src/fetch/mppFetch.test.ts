@@ -14,6 +14,7 @@ import {
   PROBLEM_LIGHTNING_SESSION_CLOSED,
   PROBLEM_LIGHTNING_SESSION_NOT_FOUND,
   PROBLEM_VERIFICATION_FAILED,
+  formatChallengeHeader,
   parseCredential,
   type SessionPayload,
 } from "@aperture/core/mpp";
@@ -1649,6 +1650,75 @@ describe("coexistence with L402", () => {
     expect(calls[1]?.authorization).toBe(
       `L402 AQIDBA==:${preimageFor("l402")}`,
     );
+  });
+
+  it("takes the L402 door when the intents decline every Payment offer", async () => {
+    // A buyer pinned to L402 through an empty intents list still sees the
+    // merged three-scheme header aperture emits with --enablempp. The
+    // Payment flow declines every offer, and the L402 challenge sitting
+    // alongside is one this client is equipped to satisfy, so it must be
+    // taken rather than surfacing the 402.
+    const merged = async (): Promise<Response> => {
+      const headers = new Headers();
+      headers.append(
+        "WWW-Authenticate",
+        'LSAT macaroon="AQIDBA==", invoice="lnbc100n1fake"',
+      );
+      headers.append(
+        "WWW-Authenticate",
+        'L402 macaroon="AQIDBA==", invoice="lnbc100n1fake"',
+      );
+      headers.append(
+        "WWW-Authenticate",
+        formatChallengeHeader(
+          await sessionChallenge({
+            depositSat: 300,
+            pricePerUnitSat: 2,
+            label: "deposit",
+          }),
+        ),
+      );
+      return new Response(null, { status: 402, headers });
+    };
+
+    const { calls } = stubFetch(async (_sent, index) =>
+      index === 0 ? merged() : new Response("ok", { status: 200 }),
+    );
+
+    const { client, payer } = newClient({ intents: [] });
+    payer.expect("lnbc100n1fake", preimageFor("l402"));
+
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(200);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.authorization).toBe(
+      `L402 AQIDBA==:${preimageFor("l402")}`,
+    );
+    expect(payer.paid).toEqual(["lnbc100n1fake"]);
+
+    // Nothing on the Payment side moved: no session was opened.
+    expect(await client.sessions.listOpen()).toEqual([]);
+  });
+
+  it("hands the 402 back when the intents decline and no L402 door exists", async () => {
+    stubFetch(async () =>
+      challengeResponse([
+        await sessionChallenge({
+          depositSat: 300,
+          pricePerUnitSat: 2,
+          label: "deposit",
+        }),
+      ]),
+    );
+
+    const { client, payer } = newClient({ intents: [] });
+    await payer.expectLabel(300, "deposit");
+
+    const response = await client(URL_UNDER_TEST);
+
+    expect(response.status).toBe(402);
+    expect(payer.paid).toEqual([]);
   });
 });
 

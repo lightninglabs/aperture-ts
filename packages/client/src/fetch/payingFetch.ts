@@ -21,6 +21,7 @@
  */
 
 import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
+import { splitChallenges } from "@aperture/core/mpp";
 import { paymentHashFromPreimage } from "@aperture/core/util";
 import { parse402Response } from "../challenge/parse402.js";
 import { requireBoundedAmount } from "../challenge/amountSafety.js";
@@ -265,7 +266,7 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
     // challenge is the one who needs it.
     const paymentChallenges = paymentChallengesFromHeaders(firstResponse);
     if (paymentChallenges.length > 0) {
-      return runPaymentFlow(
+      const result = await runPaymentFlow(
         {
           payer: config.payer,
           sessions,
@@ -292,6 +293,17 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
           assertNotAborted,
         },
       );
+
+      // The flow handing the original 402 straight back means it declined
+      // every Payment offer without paying or retrying, which is what a
+      // buyer pinned to L402 through an empty intents list looks like. A
+      // merged header that also carries an L402 challenge still has that
+      // door open, and a buyer configured away from the Payment scheme
+      // should walk through it rather than surface a 402 it was equipped
+      // to satisfy.
+      if (result !== firstResponse || !carriesL402Challenge(firstResponse)) {
+        return result;
+      }
     }
 
     // A session credential that the server answered with something other
@@ -330,6 +342,26 @@ export function createPayingFetch(config: PayingFetchConfig): PayingFetch {
     );
 
   return payingFetch;
+}
+
+/**
+ * Whether a 402's WWW-Authenticate carries an L402 challenge the legacy
+ * flow can act on. Both spellings of the scheme count, and the challenge
+ * must actually carry the macaroon and invoice the flow needs, so a bare
+ * scheme token does not send the request into a parser that will throw.
+ */
+function carriesL402Challenge(response: Response): boolean {
+  const header = response.headers.get("WWW-Authenticate") ?? "";
+  if (header === "") return false;
+
+  return splitChallenges(header).some((challenge) => {
+    const scheme = challenge.scheme.toLowerCase();
+    return (
+      (scheme === "l402" || scheme === "lsat") &&
+      typeof challenge.params.macaroon === "string" &&
+      typeof challenge.params.invoice === "string"
+    );
+  });
 }
 
 /** What `attachExistingCredential` decided to present, and on what. */
