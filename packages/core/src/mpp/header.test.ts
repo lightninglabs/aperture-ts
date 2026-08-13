@@ -470,6 +470,36 @@ describe("splitChallenges", () => {
     expect(() => parseChallengeHeader(merged)).toThrow(/missing/);
   });
 
+  it("does not attach params that follow a token68 challenge", () => {
+    // `Negotiate YWJjZA` is a complete challenge in the scheme-token68
+    // form. The reference scanner reads the data as opening yet another
+    // challenge, so params after it belong to that one, and letting them
+    // fall through to the Payment challenge instead would have it echoing
+    // an opaque the server's HMAC never covered: a paid credential bound
+    // for a guaranteed rejection.
+    const merged =
+      'Payment id="a", realm="r", method="lightning", intent="charge", ' +
+      'request="eyJhIjoxfQ", Negotiate YWJjZA, opaque="evil"';
+
+    const challenges = parsePaymentChallenges(merged);
+
+    expect(challenges).toHaveLength(1);
+    expect(challenges[0]?.id).toBe("a");
+    expect(challenges[0]?.opaque).toBeUndefined();
+  });
+
+  it("does not build a Payment challenge from params behind its token68", () => {
+    // `Payment YWJjZA` is also complete: the token68 data ends it, and the
+    // params that follow open against the data's own discard challenge, so
+    // no Payment challenge is assembled from parameters the scheme token
+    // never governed.
+    const merged =
+      'Payment YWJjZA, id="a", realm="r", method="lightning", ' +
+      'intent="charge", request="eyJhIjoxfQ"';
+
+    expect(parsePaymentChallenges(merged)).toEqual([]);
+  });
+
   it("keeps a parameter whose name collides with Object.prototype", () => {
     // Duplicate detection asks `key in params`, which walks the prototype
     // chain of an object literal. A parameter named for anything on

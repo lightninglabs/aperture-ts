@@ -62,6 +62,21 @@ export function splitChallenges(headerValue: string): ParsedChallenge[] {
       current = { scheme: scheme.name, params: emptyParams() };
       challenges.push(current);
 
+      // A token68 tail (`Basic YWJjZA`) ends its challenge on the spot,
+      // and the reference scanner reads the data itself as opening yet
+      // another challenge, so whatever params follow belong to that one.
+      // Following along matters for more than fidelity: leaving `current`
+      // pointing at an earlier Payment challenge would let params the
+      // server's HMAC never covered attach to it, and a client that pays
+      // against that challenge then echoes a credential the server is
+      // guaranteed to refuse. A payment for a guaranteed rejection is the
+      // expensive way to parse a header.
+      if (scheme.token68 !== null) {
+        current = { scheme: scheme.token68, params: emptyParams() };
+        challenges.push(current);
+        continue;
+      }
+
       if (scheme.rest !== "") {
         assignParam(current.params, scheme.rest);
       }
@@ -482,12 +497,14 @@ function splitTopLevel(value: string): string[] {
 /**
  * Recognize an element that begins a new challenge, which is one whose first
  * whitespace-delimited token is a bare scheme name rather than the left side
- * of an auth-param. Returns the scheme and whatever followed it on the same
- * element, which is that challenge's first auth-param.
+ * of an auth-param. Returns the scheme, whatever followed it on the same
+ * element as that challenge's first auth-param, and, when the tail carries
+ * no `=` at all, the token68 data of a challenge in the `scheme token68`
+ * form.
  */
 function leadingScheme(
   element: string,
-): { name: string; rest: string } | null {
+): { name: string; rest: string; token68: string | null } | null {
   const match = element.match(/^([A-Za-z0-9!#$%&'*+\-.^_`|~]+)(\s+([\s\S]*))?$/);
   if (!match) return null;
 
@@ -499,11 +516,14 @@ function leadingScheme(
   // `realm = "example.com"`, not a scheme followed by its first parameter.
   if (rest.startsWith("=")) return null;
 
-  // A bare token with no remainder is a scheme carrying no parameters yet.
-  // Anything else must look like an auth-param to be a scheme's tail.
-  if (rest !== "" && !rest.includes("=")) return null;
+  // A tail with no "=" anywhere is token68 data, as in `Basic YWJjZA`: a
+  // complete challenge whose scheme is `name` and whose data this parser
+  // has no use for.
+  if (rest !== "" && !rest.includes("=")) {
+    return { name, rest: "", token68: rest };
+  }
 
-  return { name, rest };
+  return { name, rest, token68: null };
 }
 
 /**
