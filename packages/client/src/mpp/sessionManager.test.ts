@@ -258,7 +258,7 @@ describe("opening a session", () => {
     // A challenge naming a hash the paid preimage does not produce was
     // describing a different invoice than the one that got settled, so no
     // session gets built on top of it.
-    const { manager, payer, store } = newManager();
+    const { manager, payer, store, receiptStore } = newManager();
     const challenge = await offer({ depositSat: 300, label: "quoted" });
 
     // The wallet settles the quoted invoice with somebody else's preimage.
@@ -274,6 +274,26 @@ describe("opening a session", () => {
     ).rejects.toThrow(/but the challenge named payment hash/);
 
     expect(store.size).toBe(0);
+
+    // The payment settled before the mismatch was known, so the spend is in
+    // the ledger even though no session was built on it.
+    const entry = receiptStore.get(await hashFor("other"));
+    expect(entry?.amountSat).toBe(300);
+    expect(entry?.preimageHex).toBe(preimageFor("other"));
+  });
+
+  it("records the spend before refusing a top-up hash mismatch", async () => {
+    const { manager, payer, key, receiptStore } = await openOne();
+    const challenge = await offer({ depositSat: 500, label: "tampered" });
+
+    payer.expect(invoiceFor(500, "tampered"), preimageFor("other"));
+
+    await expect(
+      manager.topUp({ key, url: URL_UNDER_TEST, challenge }),
+    ).rejects.toThrow(/but the challenge named payment hash/);
+
+    const entry = receiptStore.get(await hashFor("other"));
+    expect(entry?.amountSat).toBe(500);
   });
 
   it("refuses a session offer with no deposit invoice", async () => {
@@ -361,10 +381,13 @@ describe("opening a session", () => {
     expect(payer.paid).toEqual([]);
   });
 
-  it("reports a store that will not hold the session it just paid for", async () => {
-    // The deposit has settled and the store refuses the write, so the
-    // session id and the deposit preimage are about to be lost along with
-    // the refund. Whatever else happens, this must not be silent.
+  it("keeps the paid session when the store refuses the write", async () => {
+    // The deposit has settled by the time the store is asked. Failing the
+    // call here would discard the in-memory record too, and with it the
+    // session id, the deposit preimage, and the return invoice, which is
+    // everything a close needs to get the deposit back. So the record comes
+    // back anyway, and the lost durability is at least said out loud.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const payer = new ScriptedPayer();
     await payer.expectLabel(300, "lost");
 
@@ -379,16 +402,21 @@ describe("opening a session", () => {
       minter: new MockReturnInvoiceMinter(),
     });
 
-    await expect(
-      manager.open({
-        key: "k",
-        origin: ORIGIN,
-        url: URL_UNDER_TEST,
-        challenge: await offer({ depositSat: 300, label: "lost" }),
-      }),
-    ).rejects.toThrow(/disk full/);
+    const record = await manager.open({
+      key: "k",
+      origin: ORIGIN,
+      url: URL_UNDER_TEST,
+      challenge: await offer({ depositSat: 300, label: "lost" }),
+    });
 
+    expect(record.depositedSat).toBe(300);
+    expect(record.depositPreimage).toBe(preimageFor("lost"));
     expect(payer.paid).toEqual([invoiceFor(300, "lost")]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/session store refused/),
+      expect.anything(),
+    );
+    warn.mockRestore();
   });
 });
 

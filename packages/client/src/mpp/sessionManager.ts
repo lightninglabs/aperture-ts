@@ -707,19 +707,22 @@ export class SessionManager {
       challengeId: challenge.params.id,
     });
 
-    const sessionId = await this.verifyPaymentHash(
-      payment.preimageHex,
-      request.paymentHash,
-    );
-
+    // The money has moved, so the spend is written down before the
+    // challenge's claims are judged: even when the quoted hash turns out to
+    // describe some other invoice, a settled payment with no ledger entry
+    // would be invisible in the audit trail precisely when the audit trail
+    // matters most.
+    const derived = await this.settledPaymentHash(payment.preimageHex);
     await this.recordPayment({
-      paymentHash: sessionId,
+      paymentHash: derived ?? "",
       amountSat: depositSat,
       paidSat: payment.amountPaidSat,
       invoice,
       preimageHex: payment.preimageHex,
       url: input.url,
     });
+
+    const sessionId = this.requireVerifiedHash(derived, request.paymentHash);
 
     const timestamp = new Date(this.now()).toISOString();
     const echo = toChallengeEcho(challenge.params);
@@ -743,7 +746,7 @@ export class SessionManager {
       pendingHandshake: { action: "open", challenge: echo },
     };
 
-    await this.store.put(input.key, record);
+    await this.putSurvivingFailure(input.key, record);
     return record;
   }
 
@@ -782,19 +785,22 @@ export class SessionManager {
       challengeId: challenge.params.id,
     });
 
-    // A top-up challenge names the payment hash of its own fresh invoice
-    // rather than the session id, so this binds the preimage to the invoice
-    // that was quoted without touching the session's identity.
-    await this.verifyPaymentHash(payment.preimageHex, request.paymentHash);
-
+    // As at open, the settled spend is recorded before the challenge's
+    // quoted hash gets to disqualify it.
+    const derived = await this.settledPaymentHash(payment.preimageHex);
     await this.recordPayment({
-      paymentHash: await paymentHashFromPreimage(payment.preimageHex),
+      paymentHash: derived ?? "",
       amountSat: topUpSat,
       paidSat: payment.amountPaidSat,
       invoice,
       preimageHex: payment.preimageHex,
       url: input.url,
     });
+
+    // A top-up challenge names the payment hash of its own fresh invoice
+    // rather than the session id, so this binds the preimage to the invoice
+    // that was quoted without touching the session's identity.
+    this.requireVerifiedHash(derived, request.paymentHash);
 
     const echo = toChallengeEcho(challenge.params);
     const updated: SessionRecord = {
@@ -814,7 +820,7 @@ export class SessionManager {
       pendingHandshake: { action: "topUp", challenge: echo },
     };
 
-    await this.store.put(input.key, updated);
+    await this.putSurvivingFailure(input.key, updated);
     return updated;
   }
 
@@ -879,19 +885,41 @@ export class SessionManager {
   }
 
   /**
-   * Confirm that the preimage the wallet obtained hashes to the payment
-   * hash the challenge quoted, and return that hash.
+   * Hash a settled payment's preimage, or report that it will not hash.
+   *
+   * This never throws, because it runs between the wallet settling and the
+   * spend being recorded: a malformed preimage from a buggy payer must not
+   * take the ledger entry down with it, and a receipt with an empty hash
+   * still beats no receipt at all.
+   */
+  private async settledPaymentHash(
+    preimageHex: string,
+  ): Promise<string | null> {
+    try {
+      return await paymentHashFromPreimage(preimageHex);
+    } catch (err) {
+      console.warn("mpp: unhashable payment preimage:", err);
+      return null;
+    }
+  }
+
+  /**
+   * Confirm that the derived payment hash answers the one the challenge
+   * quoted, and return it.
    *
    * This is the one identity check in the session flow that needs no trust
    * in the server at all: sha256 of the preimage is the payment hash, full
    * stop. A mismatch means the invoice that was paid is not the invoice the
-   * challenge described, and no session gets built on top of that.
+   * challenge described, and no session gets built on top of that. By the
+   * time this throws, the spend itself has already been written down.
    */
-  private async verifyPaymentHash(
-    preimageHex: string,
-    quoted: string,
-  ): Promise<string> {
-    const derived = await paymentHashFromPreimage(preimageHex);
+  private requireVerifiedHash(derived: string | null, quoted: string): string {
+    if (derived === null) {
+      throw new Error(
+        "mpp: paid preimage could not be hashed; no session gets built on " +
+          "it",
+      );
+    }
 
     if (quoted !== "" && derived.toLowerCase() !== quoted.toLowerCase()) {
       throw new Error(
@@ -901,6 +929,33 @@ export class SessionManager {
     }
 
     return derived;
+  }
+
+  /**
+   * Store a record that a deposit has just been paid for, surviving a store
+   * that refuses the write.
+   *
+   * The money moved before this runs. A durable store that throws here
+   * costs durability, which is bad, but failing the call would discard the
+   * in-memory record too, and with it the session id, the deposit preimage,
+   * and the return invoice: everything a close needs to get the deposit
+   * back. The record is handed to the caller either way; what cannot be
+   * saved is at least not also lost.
+   */
+  private async putSurvivingFailure(
+    key: string,
+    record: SessionRecord,
+  ): Promise<void> {
+    try {
+      await this.store.put(key, record);
+    } catch (err) {
+      console.warn(
+        `mpp: session store refused the record for session ` +
+          `${record.sessionId}; it lives only in this process now, and the ` +
+          "refund with it:",
+        err,
+      );
+    }
   }
 
   private async recordPayment(receipt: {
