@@ -59,7 +59,7 @@ export function splitChallenges(headerValue: string): ParsedChallenge[] {
 
     const scheme = leadingScheme(trimmed);
     if (scheme !== null) {
-      current = { scheme: scheme.name, params: {} };
+      current = { scheme: scheme.name, params: emptyParams() };
       challenges.push(current);
 
       if (scheme.rest !== "") {
@@ -491,6 +491,21 @@ function leadingScheme(
   if (rest !== "" && !rest.includes("=")) return null;
 
   return { name, rest };
+}
+
+/**
+ * Build the map an auth-param set accumulates into.
+ *
+ * The prototype has to go. Duplicate detection below asks whether a key is
+ * already present with `in`, which walks the prototype chain of an ordinary
+ * object literal, so a challenge carrying a parameter named `constructor`,
+ * `toString` or `valueOf` would look like a repeat of something never seen
+ * and be dropped. None of the parameters this protocol defines collide, but
+ * the extension parameters it invites are written by whoever wants one, and
+ * a null prototype costs nothing to be right about.
+ */
+function emptyParams(): Record<string, string> {
+  return Object.create(null) as Record<string, string>;
 }
 
 /** Parse one `key=value` or `key="value"` auth-param into the map. */

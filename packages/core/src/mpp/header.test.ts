@@ -397,6 +397,40 @@ describe("splitChallenges", () => {
     expect(parsePaymentChallenges(mixed)).toHaveLength(1);
   });
 
+  it("keeps a parameter whose name collides with Object.prototype", () => {
+    // Duplicate detection asks `key in params`, which walks the prototype
+    // chain of an object literal. A parameter named for anything on
+    // Object.prototype would look like a repeat of something never seen and
+    // be dropped.
+    const header =
+      'Payment id="a", realm="r", method="lightning", intent="charge", ' +
+      'request="eyJhIjoxfQ", constructor="c", tostring="t", valueof="v"';
+
+    const [challenge] = splitChallenges(header);
+
+    expect(challenge?.params.constructor).toBe("c");
+    expect(challenge?.params.tostring).toBe("t");
+    expect(challenge?.params.valueof).toBe("v");
+    expect(parseChallengeHeader(header).id).toBe("a");
+  });
+
+  it("accepts auth-param names case-insensitively", () => {
+    // RFC 9110 section 11.2 makes the auth-param name a token, and tokens
+    // are case-insensitive. A parser that keys on the spelling it was given
+    // reads a correctly-formed challenge as missing its required fields.
+    const header =
+      'Payment ID="a", Realm="r", METHOD="lightning", InTeNt="charge", ' +
+      'REQUEST="eyJhIjoxfQ"';
+
+    const challenge = parseChallengeHeader(header);
+
+    expect(challenge.id).toBe("a");
+    expect(challenge.realm).toBe("r");
+    expect(challenge.method).toBe("lightning");
+    expect(challenge.intent).toBe("charge");
+    expect(challenge.request).toBe("eyJhIjoxfQ");
+  });
+
   it("skips a malformed Payment challenge without losing a valid one", () => {
     // One unusable offer among several must not cost the client the offers
     // it could have satisfied.
