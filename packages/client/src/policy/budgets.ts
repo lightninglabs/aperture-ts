@@ -1,2 +1,2 @@
-// Re-export from core — buyer policies live in @aperture/core.
-export { BudgetCapPolicy, WindowBudgetPolicy } from "@aperture/core/policy";
+// Re-export from core — buyer policies live in @lightninglabs/aperture-core.
+export { BudgetCapPolicy, WindowBudgetPolicy } from "@lightninglabs/aperture-core/policy";

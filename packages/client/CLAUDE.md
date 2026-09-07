@@ -1,4 +1,4 @@
-# @aperture/client
+# @lightninglabs/aperture-client
 
 ## Purpose
 
@@ -34,13 +34,13 @@ many requests.
 - `src/fetch/` — `payingFetch.ts` (the 402 handler and the L402 loop), `retry.ts` (Authorization attachment, idempotency)
 - `src/challenge/` — `parse402.ts` (L402 402 parsing), `bolt11Amount.ts`, `amountSafety.ts` (bounding the outflow, shared by both protocols)
 - `src/mpp/` — `challenge.ts` (reading Payment offers off a 402), `credential.ts` (building the echo and payload), `receipt.ts` (reading and checking `Payment-Receipt`), `sessionManager.ts` (the session state machine), `flow.ts` (the Payment half of the buyer loop), `fixtures.ts` (test-only stub seller)
-- `src/policy/` — Re-exports from `@aperture/core/policy` + `ManualApprovalPolicy`
+- `src/policy/` — Re-exports from `@lightninglabs/aperture-core/policy` + `ManualApprovalPolicy`
 - `src/cache/` — `tokenCache.ts` (TTL-based), `receiptCache.ts` (payment audit trail), `credentialCache.ts` (paid Payment credentials), `sessionStore.ts` (open sessions)
 - `src/payer/` — `InvoicePayer` interface + `MockInvoicePayer`
 
 ## Relationships
 
-- **Depends on**: [`@aperture/core`](../core/CLAUDE.md) (types, BuyerPolicy interface, policy implementations)
+- **Depends on**: [`@lightninglabs/aperture-core`](../core/CLAUDE.md) (types, BuyerPolicy interface, policy implementations)
 - **Depended on by**: Example buyer client (`examples/buyer-client.ts`), end-user applications
 - **External**: Standard `fetch()` API
 
@@ -70,9 +70,9 @@ many requests.
 - `src/fetch/mppFetch.test.ts` — The Payment loop end to end against a stub seller: charge, session open, bearer, top-up, close, recovery from each problem type, concurrency, and coexistence with L402
 - `src/mpp/challenge.test.ts`, `src/mpp/credential.test.ts`, `src/mpp/receipt.test.ts` — Offer parsing and selection, credential echo fidelity, receipt checking
 - `src/mpp/sessionManager.test.ts` — The state machine: deposit coalescing, payment-hash derivation, policy assertion, refunds, close ordering
-- Run: `pnpm --filter @aperture/client test`
+- Run: `pnpm --filter @lightninglabs/aperture-client test`
 
 ## Deep Docs
 
-- [`@aperture/core` CLAUDE.md](../core/CLAUDE.md) — Protocol types and policies this package consumes
+- [`@lightninglabs/aperture-core` CLAUDE.md](../core/CLAUDE.md) — Protocol types and policies this package consumes
 - [README.md](../../README.md) — Project overview, payingFetch usage, buyer policy examples

@@ -3,7 +3,7 @@
 ## Purpose
 
 Scaffolding CLI that generates a new paid API or paid MCP server project
-pre-configured with `@aperture/http` and `@aperture/core` on Cloudflare
+pre-configured with `@lightninglabs/aperture-http` and `@lightninglabs/aperture-core` on Cloudflare
 Workers. Runnable via `npx create-aperture-app`.
 
 ## Key Types
@@ -19,8 +19,8 @@ Workers. Runnable via `npx create-aperture-app`.
 ## Relationships
 
 - **Depends on** (via templates):
-  - [`@aperture/core`](../core/CLAUDE.md) — templates import macaroon issuer/verifier, types
-  - [`@aperture/http`](../http/CLAUDE.md) — templates import runtime factory, adapters, invoice providers
+  - [`@lightninglabs/aperture-core`](../core/CLAUDE.md) — templates import macaroon issuer/verifier, types
+  - [`@lightninglabs/aperture-http`](../http/CLAUDE.md) — templates import runtime factory, adapters, invoice providers
 - **Depended on by**: None (end-user scaffolding tool)
 
 ## Templates
@@ -38,6 +38,6 @@ Workers. Runnable via `npx create-aperture-app`.
 
 ## Deep Docs
 
-- [`@aperture/core` CLAUDE.md](../core/CLAUDE.md) — Protocol types used by templates
-- [`@aperture/http` CLAUDE.md](../http/CLAUDE.md) — Worker runtime used by templates
+- [`@lightninglabs/aperture-core` CLAUDE.md](../core/CLAUDE.md) — Protocol types used by templates
+- [`@lightninglabs/aperture-http` CLAUDE.md](../http/CLAUDE.md) — Worker runtime used by templates
 - [README.md](../../README.md) — Quick start guide, project structure

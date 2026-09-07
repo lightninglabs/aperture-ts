@@ -20,9 +20,9 @@
  * with a wallet attached.
  */
 
-import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
-import { splitChallenges } from "@aperture/core/mpp";
-import { paymentHashFromPreimage } from "@aperture/core/util";
+import type { BuyerPolicy, InvoicePayer } from "@lightninglabs/aperture-core";
+import { splitChallenges } from "@lightninglabs/aperture-core/mpp";
+import { paymentHashFromPreimage } from "@lightninglabs/aperture-core/util";
 import { parse402Response } from "../challenge/parse402.js";
 import { requireBoundedAmount } from "../challenge/amountSafety.js";
 import {

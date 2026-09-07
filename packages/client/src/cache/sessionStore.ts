@@ -11,7 +11,7 @@
  * anything that survives a restart is expected to inject its own.
  */
 
-import type { ChallengeEcho } from "@aperture/core/mpp";
+import type { ChallengeEcho } from "@lightninglabs/aperture-core/mpp";
 
 /** Everything needed to keep spending a session, and to close it later. */
 export interface SessionRecord {

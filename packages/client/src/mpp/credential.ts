@@ -14,7 +14,7 @@ import {
   type ChargePayload,
   type Credential,
   type SessionPayload,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 
 /**
  * Convert parsed challenge parameters into the echo that goes back in a

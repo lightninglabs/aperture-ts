@@ -18,7 +18,7 @@ Regenerate it from an aperture checkout:
 ```sh
 cd /path/to/aperture
 go run ./cmd/gen-mpp-vectors -o - > /path/to/aperture-ts/packages/core/testdata/mpp/vectors.json
-pnpm --filter @aperture/core test
+pnpm --filter @lightninglabs/aperture-core test
 ```
 
 Aperture's own `TestVectorsAreCurrent` fails if its committed copy has drifted

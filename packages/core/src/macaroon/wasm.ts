@@ -7,7 +7,7 @@
  * node:path or import.meta.url, so it bundles cleanly for Cloudflare
  * Workers. The caller supplies the compiled module or its bytes. Node
  * callers who want the old read-it-off-disk behaviour should use
- * `initWasmFromDisk` from "@aperture/core/node".
+ * `initWasmFromDisk` from "@lightninglabs/aperture-core/node".
  */
 
 // --------------------------------------------------------------------------
@@ -141,7 +141,7 @@ async function doInit(
     throw new Error(
       "initWasm() requires the compiled module or its bytes. In a Worker, " +
         'pass the imported .wasm module binding; in Node, use ' +
-        'initWasmFromDisk() from "@aperture/core/node".',
+        'initWasmFromDisk() from "@lightninglabs/aperture-core/node".',
     );
   }
 

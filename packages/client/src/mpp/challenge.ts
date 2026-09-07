@@ -17,7 +17,7 @@ import {
   type ChargeRequest,
   type ProblemDetails,
   type SessionRequest,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 
 /** A charge offer: pay one invoice, get one response. */
 export interface ChargeChallenge {

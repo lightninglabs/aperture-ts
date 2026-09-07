@@ -3,7 +3,7 @@ import {
   encodeRequestObject,
   formatChallengeHeader,
   type ChallengeParams,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 import {
   isChallengeExpired,
   paymentChallengesFromHeaders,

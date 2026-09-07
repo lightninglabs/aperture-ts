@@ -1,5 +1,5 @@
 {
-  "name": "create-aperture-app",
+  "name": "@lightninglabs/create-aperture-app",
   "version": "0.0.1",
   "description": "Scaffold a paid API or paid MCP server on Cloudflare Workers",
   "license": "MIT",

@@ -17,7 +17,7 @@ import {
   formatChallengeHeader,
   parseCredential,
   type SessionPayload,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 import { createPayingFetch } from "./payingFetch.js";
 import { SessionCache } from "../cache/sessionStore.js";
 import {
@@ -1728,7 +1728,7 @@ async function chargeChallengeWithInvoice(
   invoice: string,
 ): Promise<typeof challenge> {
   const { decodeRequestObject, encodeRequestObject, computeChallengeId } =
-    await import("@aperture/core/mpp");
+    await import("@lightninglabs/aperture-core/mpp");
   const { SELLER_SECRET } = await import("../mpp/fixtures.js");
 
   const request = decodeRequestObject<{

@@ -1,2 +1,2 @@
 // Re-export from core.
-export { HostAllowlistPolicy, RouteAllowlistPolicy } from "@aperture/core/policy";
+export { HostAllowlistPolicy, RouteAllowlistPolicy } from "@lightninglabs/aperture-core/policy";

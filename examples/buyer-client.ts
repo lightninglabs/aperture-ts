@@ -1,5 +1,5 @@
 /**
- * Example buyer client using @aperture/client payingFetch.
+ * Example buyer client using @lightninglabs/aperture-client payingFetch.
  *
  * Usage: npx tsx examples/buyer-client.ts
  *
@@ -7,8 +7,8 @@
  *   cd examples/worker-rest-paid-api && pnpm dev
  */
 
-import { createPayingFetch, MockInvoicePayer } from "@aperture/client";
-import { BudgetCapPolicy, HostAllowlistPolicy, CompositeBuyerPolicy } from "@aperture/core/policy";
+import { createPayingFetch, MockInvoicePayer } from "@lightninglabs/aperture-client";
+import { BudgetCapPolicy, HostAllowlistPolicy, CompositeBuyerPolicy } from "@lightninglabs/aperture-core/policy";
 
 const SELLER_URL = "http://localhost:8787/v1/search";
 

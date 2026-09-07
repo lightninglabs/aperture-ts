@@ -2,7 +2,7 @@
  * Typed client for calling SellerStateDO methods from the Worker.
  */
 
-import type { ChallengeState, ReceiptSummary } from "@aperture/core";
+import type { ChallengeState, ReceiptSummary } from "@lightninglabs/aperture-core";
 
 export class SellerStateClient {
   private stub: DurableObjectStub;

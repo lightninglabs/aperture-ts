@@ -1,4 +1,4 @@
-# @aperture/core
+# @lightninglabs/aperture-core
 
 ## Purpose
 
@@ -35,16 +35,16 @@ seller-side Worker runtime and the buyer-side client SDK.
 
 ## Relationships
 
-- **Depends on**: [`@aperture/wasm`](../wasm/CLAUDE.md) (loads `aperture.wasm` binary at runtime for macaroon mint/verify/caveats)
+- **Depends on**: [`@lightninglabs/aperture-wasm`](../wasm/CLAUDE.md) (loads `aperture.wasm` binary at runtime for macaroon mint/verify/caveats)
 - **Depended on by**:
-  - [`@aperture/http`](../http/CLAUDE.md) — uses all protocol types, L402 parsing, challenge building, route matching, pricing, receipts
-  - [`@aperture/client`](../client/CLAUDE.md) — uses types, BuyerPolicy interface, policy implementations
+  - [`@lightninglabs/aperture-http`](../http/CLAUDE.md) — uses all protocol types, L402 parsing, challenge building, route matching, pricing, receipts
+  - [`@lightninglabs/aperture-client`](../client/CLAUDE.md) — uses types, BuyerPolicy interface, policy implementations
   - [`create-aperture-app`](../create-aperture-app/CLAUDE.md) — templates import core types
 - **External**: Web Crypto API (HKDF key derivation, SHA-256), Go WASM runtime (`wasm_exec.js`)
 
 ## Invariants
 
-- `initWasm(source)` must be called before any macaroon operation (`getWasm()` throws if not initialized). It takes the compiled module or its bytes and requires `globalThis.Go` to already be defined; it never reads from disk. Node callers use `initWasmFromDisk()` from `@aperture/core/node`, which is the only module in the package that touches Node builtins, so Worker bundles stay free of them.
+- `initWasm(source)` must be called before any macaroon operation (`getWasm()` throws if not initialized). It takes the compiled module or its bytes and requires `globalThis.Go` to already be defined; it never reads from disk. Node callers use `initWasmFromDisk()` from `@lightninglabs/aperture-core/node`, which is the only module in the package that touches Node builtins, so Worker bundles stay free of them.
 - The WASM bridge uses `globalThis.apertureWasm` — only one instance can be active per isolate.
 - Caveat format is `condition=value` (single `=` delimiter, `SplitN(s, "=", 2)`).
 - Service caveat format is `services=name:tier,name2:tier2` matching Go's `encodeServicesCaveatValue`.
@@ -68,7 +68,7 @@ seller-side Worker runtime and the buyer-side client SDK.
 - `src/mpp/base64url.test.ts` — 11 tests: Go vectors, round trips, and the strictness that keeps a signed value from having two encodings
 - `src/mpp/challengeId.test.ts` — 21 tests: Go vectors including empty and oversized secrets, plus tamper detection across every parameter
 - `src/mpp/header.test.ts` — 40 tests: Go header/credential/receipt vectors, multi-challenge splitting, quoting, and malformed input
-- Run: `pnpm --filter @aperture/core test`
+- Run: `pnpm --filter @lightninglabs/aperture-core test`
 
 ## Interop
 
@@ -81,7 +81,7 @@ limitations of the reference implementation that the tests pin.
 
 ## Deep Docs
 
-- [`@aperture/wasm` CLAUDE.md](../wasm/CLAUDE.md) — Go WASM bridge this package loads
-- [`@aperture/http` CLAUDE.md](../http/CLAUDE.md) — Worker runtime consuming this package
-- [`@aperture/client` CLAUDE.md](../client/CLAUDE.md) — Buyer SDK consuming this package
+- [`@lightninglabs/aperture-wasm` CLAUDE.md](../wasm/CLAUDE.md) — Go WASM bridge this package loads
+- [`@lightninglabs/aperture-http` CLAUDE.md](../http/CLAUDE.md) — Worker runtime consuming this package
+- [`@lightninglabs/aperture-client` CLAUDE.md](../client/CLAUDE.md) — Buyer SDK consuming this package
 - [README.md](../../README.md) — Project overview, architecture diagrams, L402 protocol explanation

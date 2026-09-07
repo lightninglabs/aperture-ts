@@ -23,10 +23,10 @@ importers:
 
   examples/worker-mcp-paid-tool:
     dependencies:
-      '@aperture/core':
+      '@lightninglabs/aperture-core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@aperture/http':
+      '@lightninglabs/aperture-http':
         specifier: workspace:*
         version: link:../../packages/http
     devDependencies:
@@ -39,10 +39,10 @@ importers:
 
   examples/worker-rest-paid-api:
     dependencies:
-      '@aperture/core':
+      '@lightninglabs/aperture-core':
         specifier: workspace:*
         version: link:../../packages/core
-      '@aperture/http':
+      '@lightninglabs/aperture-http':
         specifier: workspace:*
         version: link:../../packages/http
     devDependencies:
@@ -55,7 +55,7 @@ importers:
 
   packages/client:
     dependencies:
-      '@aperture/core':
+      '@lightninglabs/aperture-core':
         specifier: workspace:*
         version: link:../core
     devDependencies:
@@ -95,7 +95,7 @@ importers:
 
   packages/http:
     dependencies:
-      '@aperture/core':
+      '@lightninglabs/aperture-core':
         specifier: workspace:*
         version: link:../core
     devDependencies:

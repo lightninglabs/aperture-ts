@@ -1,4 +1,4 @@
-# @aperture/wasm
+# @lightninglabs/aperture-wasm
 
 ## Purpose
 
@@ -28,7 +28,7 @@ cryptographically-correct macaroon operations.
 ## Relationships
 
 - **Depends on**: `gopkg.in/macaroon.v2` (HMAC-SHA256 macaroon library), `golang.org/x/crypto`
-- **Depended on by**: [`@aperture/core`](../core/CLAUDE.md) (loads `aperture.wasm` via `src/macaroon/wasm.ts`)
+- **Depended on by**: [`@lightninglabs/aperture-core`](../core/CLAUDE.md) (loads `aperture.wasm` via `src/macaroon/wasm.ts`)
 - **External**: Go standard WASM target (`syscall/js`), CF Workers WASM module import
 
 ## Invariants
@@ -54,5 +54,5 @@ make clean   # Remove dist/
 ## Deep Docs
 
 - [Go aperture l402 package](https://github.com/lightninglabs/aperture/tree/master/l402) — Upstream source
-- [`@aperture/core` CLAUDE.md](../core/CLAUDE.md) — TypeScript wrapper that loads this WASM
+- [`@lightninglabs/aperture-core` CLAUDE.md](../core/CLAUDE.md) — TypeScript wrapper that loads this WASM
 - [README.md](../../README.md) — Project overview, WASM bridge details

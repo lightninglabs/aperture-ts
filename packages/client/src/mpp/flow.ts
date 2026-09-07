@@ -19,8 +19,8 @@
  *    money bought.
  */
 
-import type { BuyerPolicy } from "@aperture/core";
-import { paymentHashFromPreimage } from "@aperture/core/util";
+import type { BuyerPolicy } from "@lightninglabs/aperture-core";
+import { paymentHashFromPreimage } from "@lightninglabs/aperture-core/util";
 import {
   INTENT_CHARGE,
   INTENT_SESSION,
@@ -32,8 +32,8 @@ import {
   type ProblemDetails,
   type SessionAction,
   type SessionReceipt,
-} from "@aperture/core/mpp";
-import type { InvoicePayer } from "@aperture/core";
+} from "@lightninglabs/aperture-core/mpp";
+import type { InvoicePayer } from "@lightninglabs/aperture-core";
 import type { CredentialStore } from "../cache/credentialCache.js";
 import type { ReceiptStore } from "../cache/receiptCache.js";
 import type { SessionRecord } from "../cache/sessionStore.js";

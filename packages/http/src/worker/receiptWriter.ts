@@ -2,7 +2,7 @@
  * Receipt writer implementations.
  */
 
-import type { ReceiptWriter, ApertureReceiptV1 } from "@aperture/core";
+import type { ReceiptWriter, ApertureReceiptV1 } from "@lightninglabs/aperture-core";
 
 /** NoopReceiptWriter: discards receipts (for testing). */
 export class NoopReceiptWriter implements ReceiptWriter {

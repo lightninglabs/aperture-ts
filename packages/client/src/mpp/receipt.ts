@@ -16,7 +16,7 @@ import {
   parseReceiptHeader,
   type Receipt,
   type SessionReceipt,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 
 /** What the client believed it was paying for when it sent the credential. */
 export interface ReceiptExpectation {

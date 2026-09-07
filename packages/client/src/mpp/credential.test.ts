@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseCredential, type ChallengeParams } from "@aperture/core/mpp";
+import { parseCredential, type ChallengeParams } from "@lightninglabs/aperture-core/mpp";
 import {
   buildChargeCredential,
   buildSessionCredential,

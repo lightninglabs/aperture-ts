@@ -3,7 +3,7 @@ import {
   METHOD_LIGHTNING,
   encodeReceipt,
   type SessionReceipt,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 import { checkReceipt, readReceipt, readRefund } from "./receipt.js";
 import { receiptResponse } from "./fixtures.js";
 

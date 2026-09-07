@@ -7,7 +7,7 @@ import type {
   OriginAdapter,
   OriginExecutionInput,
   VerifiedL402Context,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";
 
 /** Handler function that the seller provides in their Worker code. */
 export type LocalHandler = (

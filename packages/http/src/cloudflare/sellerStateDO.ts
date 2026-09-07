@@ -8,7 +8,7 @@
  * - Token revocation state.
  */
 
-import type { ChallengeState, ReceiptSummary } from "@aperture/core";
+import type { ChallengeState, ReceiptSummary } from "@lightninglabs/aperture-core";
 
 export class SellerStateDO implements DurableObject {
   private state: DurableObjectState;

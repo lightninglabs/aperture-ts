@@ -1,4 +1,4 @@
-# @aperture/http
+# @lightninglabs/aperture-http
 
 ## Purpose
 
@@ -30,7 +30,7 @@ forwarding, and async receipt emission into a single Worker fetch handler.
 
 ## Relationships
 
-- **Depends on**: [`@aperture/core`](../core/CLAUDE.md) (all protocol types, L402 parsing, challenge building, route matching, pricing, receipts)
+- **Depends on**: [`@lightninglabs/aperture-core`](../core/CLAUDE.md) (all protocol types, L402 parsing, challenge building, route matching, pricing, receipts)
 - **Depended on by**:
   - [`create-aperture-app`](../create-aperture-app/CLAUDE.md) — templates import runtime factory + adapters
   - Example Workers (`examples/worker-rest-paid-api/`, `examples/worker-mcp-paid-tool/`)
@@ -50,10 +50,10 @@ forwarding, and async receipt emission into a single Worker fetch handler.
 - `src/worker/tenantResolver.test.ts` — 3 tests: static + hostname-based resolution
 - `src/invoices/mock.test.ts` — 3 tests: invoice creation, preimage storage, preimage→hash verification
 - `src/proxy/localHandler.test.ts` — 2 tests: handler invocation, auth context passing
-- Run: `pnpm --filter @aperture/http test`
+- Run: `pnpm --filter @lightninglabs/aperture-http test`
 
 ## Deep Docs
 
-- [`@aperture/core` CLAUDE.md](../core/CLAUDE.md) — Protocol types and WASM macaroon ops this package uses
+- [`@lightninglabs/aperture-core` CLAUDE.md](../core/CLAUDE.md) — Protocol types and WASM macaroon ops this package uses
 - [`create-aperture-app` CLAUDE.md](../create-aperture-app/CLAUDE.md) — Scaffolding tool using this runtime
 - [README.md](../../README.md) — Project overview, seller config model, invoice provider docs

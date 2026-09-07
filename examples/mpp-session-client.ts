@@ -16,8 +16,8 @@ import {
   MockInvoicePayer,
   MockReturnInvoiceMinter,
   SessionCache,
-} from "@aperture/client";
-import { BudgetCapPolicy } from "@aperture/core/policy";
+} from "@lightninglabs/aperture-client";
+import { BudgetCapPolicy } from "@lightninglabs/aperture-core/policy";
 
 const SELLER_URL = process.env.SELLER_URL ?? "http://localhost:8081/v1/infer";
 

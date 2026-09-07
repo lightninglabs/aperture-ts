@@ -11,7 +11,7 @@
  * Test-only. Not exported from the package index.
  */
 
-import { paymentHashFromPreimage } from "@aperture/core/util";
+import { paymentHashFromPreimage } from "@lightninglabs/aperture-core/util";
 import {
   INTENT_CHARGE,
   INTENT_SESSION,
@@ -33,7 +33,7 @@ import {
   type SessionPayload,
   type SessionReceipt,
   type SessionRequest,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 
 export const SELLER_SECRET = "fixture-server-secret-key-32-byte";
 export const REALM = "api.example.com";

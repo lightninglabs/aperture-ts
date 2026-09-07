@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import type { BuyerPolicy } from "@aperture/core";
+import type { BuyerPolicy } from "@lightninglabs/aperture-core";
 import { SessionCache, type SessionRecord } from "../cache/sessionStore.js";
 import { ReceiptCache } from "../cache/receiptCache.js";
 import { paymentChallengesFromHeaders } from "./challenge.js";

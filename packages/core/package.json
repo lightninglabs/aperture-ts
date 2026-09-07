@@ -1,5 +1,5 @@
 {
-  "name": "@aperture/core",
+  "name": "@lightninglabs/aperture-core",
   "version": "0.0.1",
   "description": "L402 protocol core: macaroon operations, pricing, receipts, policy",
   "license": "MIT",

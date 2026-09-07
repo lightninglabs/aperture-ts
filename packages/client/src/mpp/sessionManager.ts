@@ -21,8 +21,8 @@
  *    somewhere else, and no session gets built on top of that.
  */
 
-import type { BuyerPolicy, InvoicePayer } from "@aperture/core";
-import { paymentHashFromPreimage } from "@aperture/core/util";
+import type { BuyerPolicy, InvoicePayer } from "@lightninglabs/aperture-core";
+import { paymentHashFromPreimage } from "@lightninglabs/aperture-core/util";
 import {
   METHOD_LIGHTNING,
   type Credential,
@@ -30,7 +30,7 @@ import {
   type SessionAction,
   type SessionPayload,
   type SessionReceipt,
-} from "@aperture/core/mpp";
+} from "@lightninglabs/aperture-core/mpp";
 import {
   SessionCache,
   type SessionRecord,

@@ -3,7 +3,7 @@
  * Design doc section 8.2.
  */
 
-import type { WorkerRuntimeConfig } from "@aperture/core";
+import type { WorkerRuntimeConfig } from "@lightninglabs/aperture-core";
 import type { Env } from "../cloudflare/bindings.js";
 import { handleRequest, type RequestHandlerDeps } from "./sellerContext.js";
 import { ApertureError, errorToResponse } from "./errors.js";
