@@ -2,6 +2,7 @@
   "name": "@aperture/core",
   "version": "0.0.1",
   "description": "L402 protocol core: macaroon operations, pricing, receipts, policy",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
