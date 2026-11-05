@@ -16,6 +16,9 @@ identical HMAC-SHA256 signing, caveat evaluation, and preimage verification.
 
 ## Architecture
 
+For a code-level map of the buyer loop, the stores, MPP sessions, and the
+seller worker, see [`docs/architecture.md`](docs/architecture.md).
+
 ### System Overview
 
 ```mermaid
