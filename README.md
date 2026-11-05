@@ -87,6 +87,8 @@ graph TD
 
 ## Packages
 
+> **Experimental:** the Cloudflare Worker runtime (`aperture-http`), `create-aperture-app` and the `examples/` are still in development and not feature-complete; for a production seller, use [aperture](https://github.com/lightninglabs/aperture) (Go).
+
 | Package | Description |
 |---------|-------------|
 | [`@lightninglabs/aperture-core`](packages/core/) | L402 protocol types, WASM-backed macaroon operations (mint, verify, caveats), pricing engine, receipt schema, route matching, buyer/seller policy evaluation. Framework-agnostic — no CF Worker or Node dependencies. |
