@@ -22,6 +22,7 @@ import type {
   SellerRuntimeConfig,
   RouteDefinition,
   InvoiceProvider,
+  CreateInvoiceResponse,
   OriginAdapter,
   MacaroonIssuerInterface,
   MacaroonVerifierInterface,
@@ -29,8 +30,18 @@ import type {
   VerifiedL402Context,
   ChallengeState,
   SellerStateStore,
+  Logger,
 } from "@lightninglabs/aperture-core";
 import { ApertureError, errorToResponse } from "./errors.js";
+
+/**
+ * Buyer-facing message for a failed invoice mint. The seller's invoice backend
+ * is an internal detail, so the buyer learns only that the gateway could not
+ * mint an invoice and that retrying is worthwhile.
+ */
+const INVOICE_BACKEND_MESSAGE =
+  "Unable to create a Lightning invoice for this request. " +
+  "The payment backend is temporarily unavailable, please retry shortly.";
 
 export interface RequestHandlerDeps {
   invoiceProvider: InvoiceProvider;
@@ -39,6 +50,7 @@ export interface RequestHandlerDeps {
   macaroonVerifier: MacaroonVerifierInterface;
   receiptWriter: ReceiptWriter;
   stateStore: SellerStateStore;
+  logger?: Logger;
 }
 
 /**
@@ -147,14 +159,36 @@ async function issueChallenge(
   // Resolve price.
   const amountSat = resolvePrice(route.pricing, { request });
 
-  // Create invoice.
-  const invoiceResult = await deps.invoiceProvider.createInvoice({
-    sellerId: seller.sellerId,
-    routeId: route.routeId,
-    amountSat,
-    memo: `L402 ${route.routeId}`,
-    expirySeconds: route.macaroonPolicy.ttlSeconds,
-  });
+  // Create invoice. Any failure here is the seller's invoice backend talking,
+  // and whatever it said is for our logs only: it can carry credentials,
+  // internal hostnames, or stack traces that an anonymous buyer must never
+  // see. Catching around the InvoiceProvider interface (rather than inside any
+  // one implementation) closes the leak for every provider at once.
+  let invoiceResult: CreateInvoiceResponse;
+  try {
+    invoiceResult = await deps.invoiceProvider.createInvoice({
+      sellerId: seller.sellerId,
+      routeId: route.routeId,
+      amountSat,
+      memo: `L402 ${route.routeId}`,
+      expirySeconds: route.macaroonPolicy.ttlSeconds,
+    });
+  } catch (err: unknown) {
+    const detail = err instanceof Error ? err.message : String(err);
+    deps.logger?.error(
+      "invoice mint failed",
+      `sellerId=${seller.sellerId}`,
+      `routeId=${route.routeId}`,
+      `detail=${detail}`,
+    );
+
+    return errorToResponse(
+      new ApertureError(
+        "invoice_backend_unavailable",
+        INVOICE_BACKEND_MESSAGE,
+      ),
+    );
+  }
 
   // Mint macaroon.
   const macaroonB64 = await deps.macaroonIssuer.mintForRoute(
