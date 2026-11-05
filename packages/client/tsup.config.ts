@@ -6,5 +6,5 @@ export default defineConfig({
   sourcemap: true,
   clean: true,
   target: "esnext",
-  external: ["@aperture/core"],
+  external: ["@lightninglabs/aperture-core"],
 });

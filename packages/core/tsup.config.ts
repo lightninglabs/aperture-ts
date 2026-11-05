@@ -9,6 +9,7 @@ export default defineConfig({
     "src/receipts/index.ts",
     "src/policy/index.ts",
     "src/util/index.ts",
+    "src/mpp/index.ts",
     "src/node/index.ts",
   ],
   format: ["esm"],

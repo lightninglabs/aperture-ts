@@ -1,7 +1,8 @@
 {
-  "name": "@aperture/client",
+  "name": "@lightninglabs/aperture-client",
   "version": "0.0.1",
   "description": "L402 buyer SDK: paying fetch, token cache, budget policies",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,7 +13,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@aperture/core": "workspace:*"
+    "@lightninglabs/aperture-core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",

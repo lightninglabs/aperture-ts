@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { LocalWorkerHandlerAdapter } from "./localHandler.js";
-import type { SellerRuntimeConfig, RouteDefinition } from "@aperture/core";
+import type { SellerRuntimeConfig, RouteDefinition } from "@lightninglabs/aperture-core";
 
 describe("LocalWorkerHandlerAdapter", () => {
   it("invokes the handler and returns its response", async () => {

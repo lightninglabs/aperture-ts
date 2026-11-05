@@ -15,7 +15,7 @@ import type {
   SellerRuntimeConfig,
   SellerStateStore,
   WorkerRuntimeConfig,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";
 
 /** The exact body the seller's invoice backend hands back on a failure. */
 const BACKEND_BODY = '{"error":"unauthorized","detail":"broker key rejected"}';

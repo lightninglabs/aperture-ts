@@ -6,9 +6,9 @@ Lightning Network micropayments using the
 
 aperture-ts is the TypeScript counterpart to
 [aperture](https://github.com/lightninglabs/aperture) (Go). The protocol
-core (`@aperture/core`) and buyer SDK (`@aperture/client`) are
+core (`@lightninglabs/aperture-core`) and buyer SDK (`@lightninglabs/aperture-client`) are
 framework-agnostic and run anywhere — Node.js, Deno, Bun, or edge
-runtimes. The `@aperture/http` package provides first-class Cloudflare
+runtimes. The `@lightninglabs/aperture-http` package provides first-class Cloudflare
 Workers integration (Durable Objects, service bindings) with adapter
 hooks for Hono, Express, and Fastify. The security-critical macaroon
 layer is shared between both codebases via a Go→WASM bridge, guaranteeing
@@ -21,7 +21,7 @@ identical HMAC-SHA256 signing, caveat evaluation, and preimage verification.
 ```mermaid
 flowchart LR
     Client["Buyer / Agent"]
-    Edge["CF Worker<br/>@aperture/http"]
+    Edge["CF Worker<br/>@lightninglabs/aperture-http"]
     DO["Durable Object<br/>Seller State"]
     INV["Invoice Provider<br/>(REST / Service Binding)"]
     LN["Seller LN Backend<br/>(litd / lnd)"]
@@ -70,9 +70,9 @@ sequenceDiagram
 ```mermaid
 graph TD
     WASM["packages/wasm<br/>(Go → WASM)"]
-    CORE["@aperture/core<br/>Protocol types, macaroon ops,<br/>pricing, receipts, policy"]
-    HTTP["@aperture/http<br/>CF Worker runtime,<br/>DO state, adapters"]
-    CLIENT["@aperture/client<br/>payingFetch, token cache,<br/>budget policies"]
+    CORE["@lightninglabs/aperture-core<br/>Protocol types, macaroon ops,<br/>pricing, receipts, policy"]
+    HTTP["@lightninglabs/aperture-http<br/>CF Worker runtime,<br/>DO state, adapters"]
+    CLIENT["@lightninglabs/aperture-client<br/>payingFetch, token cache,<br/>budget policies"]
     CAA["create-aperture-app<br/>Scaffolding CLI"]
 
     WASM -->|"aperture.wasm"| CORE
@@ -86,9 +86,9 @@ graph TD
 
 | Package | Description |
 |---------|-------------|
-| [`@aperture/core`](packages/core/) | L402 protocol types, WASM-backed macaroon operations (mint, verify, caveats), pricing engine, receipt schema, route matching, buyer/seller policy evaluation. Framework-agnostic — no CF Worker or Node dependencies. |
-| [`@aperture/http`](packages/http/) | Cloudflare Worker runtime. `createApertureWorkerRuntime()` factory wiring tenant resolution, L402 challenge issuance, credential verification, origin proxying, Durable Object state coordination, and async receipt emission. |
-| [`@aperture/client`](packages/client/) | Buyer-side SDK. `payingFetch()` automatically detects 402 challenges, enforces budget/allowlist policies, pays Lightning invoices, caches L402 tokens, and retries with valid credentials. |
+| [`@lightninglabs/aperture-core`](packages/core/) | L402 protocol types, WASM-backed macaroon operations (mint, verify, caveats), pricing engine, receipt schema, route matching, buyer/seller policy evaluation. Framework-agnostic — no CF Worker or Node dependencies. |
+| [`@lightninglabs/aperture-http`](packages/http/) | Cloudflare Worker runtime. `createApertureWorkerRuntime()` factory wiring tenant resolution, L402 challenge issuance, credential verification, origin proxying, Durable Object state coordination, and async receipt emission. |
+| [`@lightninglabs/aperture-client`](packages/client/) | Buyer-side SDK. `payingFetch()` automatically detects 402 challenges, enforces budget/allowlist policies, pays Lightning invoices, caches L402 tokens, and retries with valid credentials. |
 | [`create-aperture-app`](packages/create-aperture-app/) | Scaffolding CLI. Generates a paid REST API or paid MCP server project pre-configured for Cloudflare Workers with `wrangler.jsonc` and mock invoice provider. |
 | [`wasm`](packages/wasm/) | Go→WASM bridge compiling aperture's macaroon primitives (HMAC-SHA256 signing, caveat verification, identifier encoding) to a 3 MB WebAssembly binary (~890 KB gzip). Vendors `aperture/l402` v0.5.0 caveat/satisfier logic with only 2 Go dependencies. |
 
@@ -110,8 +110,8 @@ free route (`/health`) using a mock invoice provider for local development.
 
 ```typescript
 import { createApertureWorkerRuntime, StaticTenantResolver, MockInvoiceProvider,
-         LocalWorkerHandlerAdapter, NoopReceiptWriter, createWorkerExport } from "@aperture/http";
-import { MacaroonIssuer, MacaroonVerifier, initWasm } from "@aperture/core/macaroon";
+         LocalWorkerHandlerAdapter, NoopReceiptWriter, createWorkerExport } from "@lightninglabs/aperture-http";
+import { MacaroonIssuer, MacaroonVerifier, initWasm } from "@lightninglabs/aperture-core/macaroon";
 
 const runtime = createApertureWorkerRuntime({
   tenantResolver: new StaticTenantResolver(sellerConfig),
@@ -129,8 +129,8 @@ export default createWorkerExport(runtime);
 ### Buyer: Auto-Pay with payingFetch
 
 ```typescript
-import { createPayingFetch } from "@aperture/client";
-import { BudgetCapPolicy, HostAllowlistPolicy, CompositeBuyerPolicy } from "@aperture/core/policy";
+import { createPayingFetch } from "@lightninglabs/aperture-client";
+import { BudgetCapPolicy, HostAllowlistPolicy, CompositeBuyerPolicy } from "@lightninglabs/aperture-core/policy";
 
 const payingFetch = createPayingFetch({
   payer: myLightningPayer,
@@ -146,6 +146,42 @@ const response = await payingFetch("https://api.example.com/v1/search", {
   body: JSON.stringify({ query: "hello" }),
 });
 // If 402 → auto-pays → retries → returns authorized response.
+```
+
+### Buyer: Sessions over the Payment Scheme
+
+The same `payingFetch` also speaks the Machine Payments Protocol's `Payment`
+authentication scheme, dispatching on what the server put in
+`WWW-Authenticate`. Its `session` intent turns one deposit into a prepaid
+balance that later requests spend down without a wallet round trip, which is
+what makes per-token pricing for inference practical.
+
+```typescript
+const payingFetch = createPayingFetch({
+  payer: myLightningPayer,
+  buyerPolicy: new BudgetCapPolicy(1000),   // Asserted on the deposit.
+  mpp: {
+    // Required for a session: the amountless invoice the server pays the
+    // unspent balance back to on close. Without it, session offers are
+    // declined and a charge offer is taken instead.
+    returnInvoiceMinter: myWallet,
+
+    // Sessions hold real money. The default store is process-local, so a
+    // restart forgets the session id and with it the refund.
+    sessionStore: myDurableSessionStore,
+  },
+});
+
+// First call pays the deposit; the rest ride the session for free.
+for (const prompt of prompts) {
+  await payingFetch("https://api.example.com/v1/infer", {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+// Close on the way out to get the unspent balance back.
+const outcomes = await payingFetch.closeSessions();
 ```
 
 ## How It Works
@@ -164,6 +200,33 @@ credentials):
    Server verifies the macaroon signature and that `sha256(preimage) == paymentHash`.
 4. **Stateless verification**: After the initial challenge, verification requires
    only the root key and the credential — no database lookup needed.
+
+### Machine Payments Protocol
+
+[MPP](https://paymentauth.org/) generalizes the 402 flow into an HTTP
+authentication scheme named `Payment`, with the payment method (lightning)
+and the intent as extensible slots. The buyer SDK implements both Lightning
+intents:
+
+- **charge** (draft-lightning-charge-00): one invoice, one response. Pay it,
+  return the preimage in the credential payload, retry once. Closest to what
+  L402 already did.
+- **session** (draft-lightning-session-00): a prepaid balance with four
+  credential actions. `open` pays a deposit and hands the server an
+  amountless return invoice; `bearer` authenticates every later request with
+  no payment at all; `topUp` adds funds when the balance runs low; `close`
+  ends the session and the server pays the remainder back.
+
+A server binds each challenge's parameters into its `id` with an HMAC and
+verifies that binding from the copy the client echoes back, so the client
+returns every parameter byte for byte rather than reconstructing any of
+them. Sessions treat the local balance as an estimate: the server prices
+metered work after the fact and settles the difference, and its number wins
+whenever the two disagree.
+
+Interop with the Go implementation in
+[aperture](https://github.com/lightninglabs/aperture) is checked in both
+directions from `packages/core/testdata/mpp`.
 
 ### Macaroon Caveats
 
@@ -306,9 +369,9 @@ make -C packages/wasm build
 pnpm -r test
 
 # Run per-package.
-pnpm --filter @aperture/core test    # 58 tests
-pnpm --filter @aperture/http test    # 14 tests
-pnpm --filter @aperture/client test  # 13 tests
+pnpm --filter @lightninglabs/aperture-core test    # 58 tests
+pnpm --filter @lightninglabs/aperture-http test    # 14 tests
+pnpm --filter @lightninglabs/aperture-client test  # 13 tests
 ```
 
 ### Project Structure
@@ -321,33 +384,37 @@ aperture-ts/
 │   │   ├── internal/l402/     # Vendored caveat/satisfier/service
 │   │   ├── Makefile           # GOOS=js GOARCH=wasm build
 │   │   └── testdata/          # Cross-compat test vectors
-│   ├── core/                  # @aperture/core
-│   │   └── src/
-│   │       ├── auth/          # L402 header parsing, challenge builder
-│   │       ├── macaroon/      # WASM loader, issuer, verifier, caveats
-│   │       ├── pricing/       # Pricing engine
-│   │       ├── receipts/      # Receipt schema + digest
-│   │       ├── policy/        # Route matching, buyer/seller policies
-│   │       └── util/          # Hashing, idempotency, clock
-│   ├── http/                  # @aperture/http
+│   ├── core/                  # @lightninglabs/aperture-core
+│   │   ├── src/
+│   │   │   ├── auth/          # L402 header parsing, challenge builder
+│   │   │   ├── macaroon/      # WASM loader, issuer, verifier, caveats
+│   │   │   ├── mpp/           # Payment scheme: JCS, base64url, headers, HMAC binding
+│   │   │   ├── pricing/       # Pricing engine
+│   │   │   ├── receipts/      # Receipt schema + digest
+│   │   │   ├── policy/        # Route matching, buyer/seller policies
+│   │   │   └── util/          # Hashing, idempotency, clock
+│   │   └── testdata/mpp/      # Two-directional Go interop harness
+│   ├── http/                  # @lightninglabs/aperture-http
 │   │   └── src/
 │   │       ├── worker/        # Runtime factory, request lifecycle, errors
 │   │       ├── cloudflare/    # Env bindings, Durable Object, DO client
 │   │       ├── invoices/      # Mock, REST, service-binding adapters
 │   │       ├── proxy/         # Origin forwarding, local handler
 │   │       └── adapters/      # CF Worker export wrapper
-│   ├── client/                # @aperture/client
+│   ├── client/                # @lightninglabs/aperture-client
 │   │   └── src/
 │   │       ├── fetch/         # payingFetch, retry logic
-│   │       ├── challenge/     # 402 response parser
+│   │       ├── challenge/     # 402 response parser, amount bounding
+│   │       ├── mpp/           # Payment offers, credentials, receipts, sessions
 │   │       ├── policy/        # Budget, allowlist, approval policies
-│   │       ├── cache/         # Token cache, receipt cache
+│   │       ├── cache/         # Token, credential, session, receipt stores
 │   │       └── payer/         # InvoicePayer interface
 │   └── create-aperture-app/   # Scaffolding CLI + templates
 ├── examples/
 │   ├── worker-rest-paid-api/  # Paid REST API example
 │   ├── worker-mcp-paid-tool/  # Paid MCP server example
-│   └── buyer-client.ts        # Buyer SDK usage example
+│   ├── buyer-client.ts        # Buyer SDK usage example (L402)
+│   └── mpp-session-client.ts  # Buyer SDK usage example (Payment sessions)
 ├── pnpm-workspace.yaml
 ├── tsconfig.base.json
 └── package.json

@@ -1,7 +1,8 @@
 {
-  "name": "@aperture/core",
+  "name": "@lightninglabs/aperture-core",
   "version": "0.0.1",
   "description": "L402 protocol core: macaroon operations, pricing, receipts, policy",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -12,6 +13,7 @@
     "./pricing": "./dist/pricing/index.js",
     "./receipts": "./dist/receipts/index.js",
     "./policy": "./dist/policy/index.js",
+    "./mpp": "./dist/mpp/index.js",
     "./util": "./dist/util/index.js",
     "./node": "./dist/node/index.js"
   },

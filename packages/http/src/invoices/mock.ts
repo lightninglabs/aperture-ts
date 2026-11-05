@@ -6,7 +6,7 @@ import type {
   InvoiceProvider,
   CreateInvoiceRequest,
   CreateInvoiceResponse,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";
 
 export class MockInvoiceProvider implements InvoiceProvider {
   /** Map of paymentHash → preimage for test verification. */

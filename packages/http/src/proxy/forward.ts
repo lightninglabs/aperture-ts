@@ -7,7 +7,7 @@ import type {
   OriginAdapter,
   OriginExecutionInput,
   VerifiedL402Context,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";
 
 export class ProxyOriginAdapter implements OriginAdapter {
   constructor(private readonly baseUrl: string) {}

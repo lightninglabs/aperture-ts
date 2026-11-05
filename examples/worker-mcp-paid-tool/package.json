@@ -8,8 +8,8 @@
     "deploy": "wrangler deploy"
   },
   "dependencies": {
-    "@aperture/core": "workspace:*",
-    "@aperture/http": "workspace:*"
+    "@lightninglabs/aperture-core": "workspace:*",
+    "@lightninglabs/aperture-http": "workspace:*"
   },
   "devDependencies": {
     "wrangler": "^4.0.0",

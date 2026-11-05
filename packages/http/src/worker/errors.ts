@@ -2,7 +2,7 @@
  * Error model and HTTP status mapping per design doc section 20.
  */
 
-import type { ApertureErrorCode } from "@aperture/core";
+import type { ApertureErrorCode } from "@lightninglabs/aperture-core";
 
 const STATUS_MAP: Record<ApertureErrorCode, number> = {
   route_not_found: 404,

@@ -6,7 +6,7 @@ import type {
   InvoiceProvider,
   CreateInvoiceRequest,
   CreateInvoiceResponse,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";
 
 export class ServiceBindingInvoiceProvider implements InvoiceProvider {
   constructor(private readonly fetcher: Fetcher) {}

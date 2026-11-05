@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { paymentHashFromPreimage } from "@aperture/core/util";
+import { paymentHashFromPreimage } from "@lightninglabs/aperture-core/util";
 import { createPayingFetch } from "./payingFetch.js";
 import { MockInvoicePayer } from "../payer/interface.js";
 import type { CachedToken, TokenStore } from "../cache/tokenCache.js";

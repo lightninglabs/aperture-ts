@@ -2,9 +2,9 @@
  * Node-only entry point.
  *
  * Everything that needs node:fs, node:path or import.meta.url lives here
- * rather than in the main entry, so bundling @aperture/core for Cloudflare
+ * rather than in the main entry, so bundling @lightninglabs/aperture-core for Cloudflare
  * Workers never has to resolve a Node builtin. Import this from
- * "@aperture/core/node"; a Worker bundle should never reach it.
+ * "@lightninglabs/aperture-core/node"; a Worker bundle should never reach it.
  */
 
 import { readFile } from "node:fs/promises";

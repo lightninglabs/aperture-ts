@@ -2,7 +2,7 @@
  * Tenant resolution: map an incoming request to a SellerRuntimeConfig.
  */
 
-import type { TenantResolver, SellerRuntimeConfig } from "@aperture/core";
+import type { TenantResolver, SellerRuntimeConfig } from "@lightninglabs/aperture-core";
 
 /**
  * StaticTenantResolver: returns a fixed seller config. Useful for single-tenant

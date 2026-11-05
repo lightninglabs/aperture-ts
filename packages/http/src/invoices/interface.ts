@@ -8,4 +8,4 @@ export type {
   CreateInvoiceResponse,
   InvoiceProviderFactory,
   InvoiceBackendConfig,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";

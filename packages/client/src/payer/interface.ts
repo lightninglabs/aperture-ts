@@ -2,7 +2,7 @@
  * InvoicePayer interface and mock implementation.
  */
 
-export type { InvoicePayer } from "@aperture/core";
+export type { InvoicePayer } from "@lightninglabs/aperture-core";
 
 /** Mock payer that returns a known preimage. Used for testing. */
 export class MockInvoicePayer {

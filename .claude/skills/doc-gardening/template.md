@@ -21,8 +21,8 @@ unfamiliar with the codebase.}
 
 ## Relationships
 
-- **Depends on**: `@aperture/pkg` (reason)
-- **Depended on by**: `@aperture/pkg` (reason)
+- **Depends on**: `@lightninglabs/aperture-pkg` (reason)
+- **Depended on by**: `@lightninglabs/aperture-pkg` (reason)
 - **External**: CF Workers APIs, WASM bridge, Web Crypto API, etc.
 
 ## Invariants
@@ -33,7 +33,7 @@ unfamiliar with the codebase.}
 ## Testing
 
 - {Test file locations and what they cover}
-- {How to run tests: `pnpm --filter @aperture/{name} test`}
+- {How to run tests: `pnpm --filter @lightninglabs/aperture-{name} test`}
 
 ## Deep Docs
 
@@ -47,7 +47,7 @@ unfamiliar with the codebase.}
   than "Handles authentication."
 - **Key Types**: List the top 5-8 exported types/interfaces. Skip internal
   types unless critical to understanding the package.
-- **Relationships**: Use actual `@aperture/*` package names. Include the
+- **Relationships**: Use actual `@lightninglabs/aperture-*` package names. Include the
   reason for each dependency.
 - **Invariants**: Focus on things that would cause bugs if violated.
   "WASM must be initialized before calling macaroon operations" is good.

@@ -17,7 +17,7 @@ import {
   computeRequestFingerprint,
   getOrCreateIdempotencyKey,
   createReceipt,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";
 import type {
   SellerRuntimeConfig,
   RouteDefinition,
@@ -31,7 +31,7 @@ import type {
   ChallengeState,
   SellerStateStore,
   Logger,
-} from "@aperture/core";
+} from "@lightninglabs/aperture-core";
 import { ApertureError, errorToResponse } from "./errors.js";
 
 /**

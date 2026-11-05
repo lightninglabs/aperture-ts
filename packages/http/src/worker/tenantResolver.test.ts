@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { StaticTenantResolver, HostnameTenantResolver } from "./tenantResolver.js";
-import type { SellerRuntimeConfig } from "@aperture/core";
+import type { SellerRuntimeConfig } from "@lightninglabs/aperture-core";
 
 const mockConfig: SellerRuntimeConfig = {
   sellerId: "seller_1",

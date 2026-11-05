@@ -11,9 +11,9 @@ import {
   LocalWorkerHandlerAdapter,
   NoopReceiptWriter,
   createWorkerExport,
-} from "@aperture/http";
-import { MacaroonIssuer, MacaroonVerifier } from "@aperture/core/macaroon";
-import type { SellerRuntimeConfig, SellerStateStore, ChallengeState, ReceiptSummary } from "@aperture/core";
+} from "@lightninglabs/aperture-http";
+import { MacaroonIssuer, MacaroonVerifier } from "@lightninglabs/aperture-core/macaroon";
+import type { SellerRuntimeConfig, SellerStateStore, ChallengeState, ReceiptSummary } from "@lightninglabs/aperture-core";
 
 const challengeStore = new Map<string, ChallengeState>();
 const stateStore: SellerStateStore = {

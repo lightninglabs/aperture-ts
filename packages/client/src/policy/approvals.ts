@@ -2,7 +2,7 @@
  * Manual approval hook for buyer policy.
  */
 
-import type { BuyerPolicy } from "@aperture/core";
+import type { BuyerPolicy } from "@lightninglabs/aperture-core";
 
 type PolicyInput = Parameters<BuyerPolicy["assertAllowed"]>[0];
 

@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "description": "TypeScript L402 runtime for Cloudflare Workers",
+  "license": "MIT",
   "scripts": {
     "build": "pnpm -r build",
     "build:wasm": "make -C packages/wasm build",

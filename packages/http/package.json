@@ -1,7 +1,8 @@
 {
-  "name": "@aperture/http",
+  "name": "@lightninglabs/aperture-http",
   "version": "0.0.1",
   "description": "Cloudflare Worker runtime for L402-gated APIs",
+  "license": "MIT",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -17,7 +18,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@aperture/core": "workspace:*"
+    "@lightninglabs/aperture-core": "workspace:*"
   },
   "devDependencies": {
     "typescript": "^5.7.0",
